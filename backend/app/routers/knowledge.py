@@ -1,52 +1,290 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db import get_db
+from app.db import SessionLocal, get_db
 from app.deps import get_current_user
 from app.llm_client import llm_client
-from app.models import KnowledgeChunk, KnowledgeDocument, User
+from app.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument, User
 from app.services.knowledge import load_text_from_upload, split_chunks
 
 router = APIRouter(prefix='/knowledge', tags=['knowledge'])
 
 
+class KnowledgeBaseCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    is_enabled: bool = True
+
+
+class KnowledgeBaseUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    is_enabled: Optional[bool] = None
+
+
+def _ensure_default_base(db: Session, user_id: int) -> KnowledgeBase:
+    base = (
+        db.query(KnowledgeBase)
+        .filter(KnowledgeBase.owner_id == user_id)
+        .order_by(KnowledgeBase.created_at.asc())
+        .first()
+    )
+    if base is not None:
+        return base
+    base = KnowledgeBase(owner_id=user_id, name='默认知识库', is_enabled=True)
+    db.add(base)
+    db.commit()
+    db.refresh(base)
+    return base
+
+
+def _update_document_progress(
+    db: Session,
+    doc: KnowledgeDocument,
+    *,
+    status: Optional[str] = None,
+    progress: Optional[int] = None,
+    total_chunks: Optional[int] = None,
+    processed_chunks: Optional[int] = None,
+    chunk_count: Optional[int] = None,
+    error_message: Optional[str] = None,
+) -> None:
+    if status is not None:
+        doc.status = status
+    if progress is not None:
+        doc.progress = max(0, min(progress, 100))
+    if total_chunks is not None:
+        doc.total_chunks = total_chunks
+    if processed_chunks is not None:
+        doc.processed_chunks = processed_chunks
+    if chunk_count is not None:
+        doc.chunk_count = chunk_count
+    if error_message is not None:
+        doc.error_message = error_message
+    db.add(doc)
+    db.commit()
+
+
+def _process_document_ingestion(document_id: int, content: bytes, content_type: str, filename: str) -> None:
+    db = SessionLocal()
+    try:
+        doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+        if doc is None:
+            return
+
+        _update_document_progress(db, doc, status='slicing', progress=10, error_message=None)
+        text = load_text_from_upload(content, content_type, filename=filename)
+        chunks = split_chunks(text)
+        _update_document_progress(db, doc, status='embedding', progress=20, total_chunks=len(chunks), processed_chunks=0)
+
+        if not chunks:
+            _update_document_progress(db, doc, status='completed', progress=100, chunk_count=0, total_chunks=0)
+            return
+
+        inserted = 0
+        for idx, chunk in enumerate(chunks):
+            embedding = llm_client.embed_text(chunk)
+            db.add(
+                KnowledgeChunk(
+                    document_id=doc.id,
+                    chunk_index=idx,
+                    text=chunk,
+                    embedding=embedding,
+                    knowledge_point='general',
+                )
+            )
+            db.commit()
+            inserted += 1
+            progress = 20 + int((inserted / len(chunks)) * 75)
+            _update_document_progress(
+                db,
+                doc,
+                status='embedding',
+                progress=progress,
+                processed_chunks=inserted,
+                chunk_count=inserted,
+                total_chunks=len(chunks),
+            )
+
+        _update_document_progress(
+            db,
+            doc,
+            status='completed',
+            progress=100,
+            processed_chunks=inserted,
+            chunk_count=inserted,
+            total_chunks=len(chunks),
+        )
+    except Exception as exc:  # pragma: no cover
+        db.rollback()
+        doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+        if doc is not None:
+            _update_document_progress(db, doc, status='failed', progress=100, error_message=str(exc)[:300])
+    finally:
+        db.close()
+
+
+@router.post('/bases')
+def create_base(
+    payload: KnowledgeBaseCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    base = KnowledgeBase(owner_id=current_user.id, name=payload.name.strip(), is_enabled=payload.is_enabled)
+    db.add(base)
+    db.commit()
+    db.refresh(base)
+    return {
+        'id': base.id,
+        'name': base.name,
+        'is_enabled': base.is_enabled,
+        'created_at': base.created_at.isoformat(),
+        'updated_at': base.updated_at.isoformat(),
+    }
+
+
+@router.get('/bases')
+def list_bases(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[dict]:
+    _ensure_default_base(db, current_user.id)
+    bases = (
+        db.query(KnowledgeBase)
+        .filter(KnowledgeBase.owner_id == current_user.id)
+        .order_by(KnowledgeBase.updated_at.desc())
+        .all()
+    )
+
+    response: list[dict] = []
+    for base in bases:
+        doc_count = (
+            db.query(func.count(KnowledgeDocument.id))
+            .filter(KnowledgeDocument.knowledge_base_id == base.id, KnowledgeDocument.owner_id == current_user.id)
+            .scalar()
+            or 0
+        )
+        chunk_count = (
+            db.query(func.count(KnowledgeChunk.id))
+            .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
+            .filter(KnowledgeDocument.knowledge_base_id == base.id, KnowledgeDocument.owner_id == current_user.id)
+            .scalar()
+            or 0
+        )
+        response.append(
+            {
+                'id': base.id,
+                'name': base.name,
+                'is_enabled': base.is_enabled,
+                'document_count': int(doc_count),
+                'chunk_count': int(chunk_count),
+                'created_at': base.created_at.isoformat(),
+                'updated_at': base.updated_at.isoformat(),
+            }
+        )
+    return response
+
+
+@router.patch('/bases/{base_id}')
+def update_base(
+    base_id: int,
+    payload: KnowledgeBaseUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    base = db.query(KnowledgeBase).filter(KnowledgeBase.id == base_id, KnowledgeBase.owner_id == current_user.id).first()
+    if base is None:
+        raise HTTPException(status_code=404, detail='Knowledge base not found')
+    if payload.name is not None:
+        base.name = payload.name.strip()
+    if payload.is_enabled is not None:
+        base.is_enabled = payload.is_enabled
+    base.updated_at = datetime.utcnow()
+    db.add(base)
+    db.commit()
+    db.refresh(base)
+    return {
+        'id': base.id,
+        'name': base.name,
+        'is_enabled': base.is_enabled,
+        'created_at': base.created_at.isoformat(),
+        'updated_at': base.updated_at.isoformat(),
+    }
+
+
 @router.post('/upload')
 def upload_knowledge(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    knowledge_base_id: Optional[int] = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     if not file.content_type:
         raise HTTPException(status_code=400, detail='Missing content type')
 
-    content = file.file.read()
-    text = load_text_from_upload(content, file.content_type)
-    chunks = split_chunks(text)
+    base: Optional[KnowledgeBase]
+    if knowledge_base_id is None:
+        base = _ensure_default_base(db, current_user.id)
+    else:
+        base = (
+            db.query(KnowledgeBase)
+            .filter(KnowledgeBase.id == knowledge_base_id, KnowledgeBase.owner_id == current_user.id)
+            .first()
+        )
+        if base is None:
+            raise HTTPException(status_code=404, detail='Knowledge base not found')
 
-    doc = KnowledgeDocument(owner_id=current_user.id, filename=file.filename, content_type=file.content_type)
+    content = file.file.read()
+    doc = KnowledgeDocument(
+        owner_id=current_user.id,
+        knowledge_base_id=base.id,
+        filename=file.filename,
+        content_type=file.content_type,
+        status='queued',
+        progress=0,
+        total_chunks=0,
+        processed_chunks=0,
+        chunk_count=0,
+        error_message=None,
+    )
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
-    inserted = 0
-    for idx, chunk in enumerate(chunks):
-        embedding = llm_client.embed_text(chunk)
-        db.add(
-            KnowledgeChunk(
-                document_id=doc.id,
-                chunk_index=idx,
-                text=chunk,
-                embedding=embedding,
-                knowledge_point='general',
-            )
-        )
-        inserted += 1
+    background_tasks.add_task(_process_document_ingestion, doc.id, content, file.content_type, file.filename or '')
 
-    db.commit()
-    return {'document_id': doc.id, 'chunks': inserted}
+    return {
+        'document_id': doc.id,
+        'knowledge_base_id': base.id,
+        'status': doc.status,
+        'progress': doc.progress,
+    }
 
 
 @router.get('/docs')
-def list_docs(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[dict]:
-    docs = db.query(KnowledgeDocument).filter(KnowledgeDocument.owner_id == current_user.id).all()
-    return [{'id': d.id, 'filename': d.filename, 'content_type': d.content_type} for d in docs]
+def list_docs(
+    knowledge_base_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    query = db.query(KnowledgeDocument).filter(KnowledgeDocument.owner_id == current_user.id)
+    if knowledge_base_id is not None:
+        query = query.filter(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
+    docs = query.order_by(KnowledgeDocument.created_at.desc()).all()
+    return [
+        {
+            'id': d.id,
+            'knowledge_base_id': d.knowledge_base_id,
+            'filename': d.filename,
+            'content_type': d.content_type,
+            'status': d.status,
+            'progress': d.progress,
+            'total_chunks': d.total_chunks,
+            'processed_chunks': d.processed_chunks,
+            'chunk_count': d.chunk_count,
+            'error_message': d.error_message,
+            'created_at': d.created_at.isoformat(),
+        }
+        for d in docs
+    ]

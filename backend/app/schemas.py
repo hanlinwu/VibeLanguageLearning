@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -25,12 +27,14 @@ class UserResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=2)
+    conversation_id: Optional[int] = None
 
 
 class QueryResponse(BaseModel):
     answer: str
     citations: list[dict]
     trace_id: str
+    conversation_id: int
 
 
 class QuizGenerateRequest(BaseModel):

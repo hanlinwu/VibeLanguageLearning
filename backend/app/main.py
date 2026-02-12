@@ -2,14 +2,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.db import Base, bootstrap_pgvector, engine
+from app.db import Base, bootstrap_pgvector_index, bootstrap_schema_compat, engine, ensure_pgvector_extension
 from app.routers import auth, interactions, knowledge, memory, query, quiz
 
 app = FastAPI(title='AI Language Learn API')
+settings = get_settings()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=settings.get_cors_origins(),
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
@@ -18,9 +19,10 @@ app.add_middleware(
 
 @app.on_event('startup')
 def on_startup() -> None:
+    ensure_pgvector_extension(engine)
     Base.metadata.create_all(bind=engine)
-    settings = get_settings()
-    bootstrap_pgvector(engine, lists=settings.pgvector_ivfflat_lists)
+    bootstrap_schema_compat(engine)
+    bootstrap_pgvector_index(engine, lists=settings.pgvector_ivfflat_lists)
 
 
 @app.get('/health')

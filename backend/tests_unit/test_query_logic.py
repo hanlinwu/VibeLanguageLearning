@@ -1,6 +1,6 @@
 import unittest
 
-from app.services.query_logic import cosine_similarity, rank_by_similarity
+from app.services.query_logic import cosine_similarity, format_recent_dialogue, rank_by_similarity
 
 
 class QueryLogicTests(unittest.TestCase):
@@ -16,6 +16,19 @@ class QueryLogicTests(unittest.TestCase):
 
     def test_cosine_similarity_invalid_vector(self) -> None:
         self.assertEqual(cosine_similarity([], [1.0]), -1.0)
+
+    def test_format_recent_dialogue_keeps_latest_turns_in_order(self) -> None:
+        history = [
+            {'question': 'Q1', 'answer': 'A1'},
+            {'question': 'Q2', 'answer': 'A2'},
+            {'question': 'Q3', 'answer': 'A3'},
+        ]
+        text = format_recent_dialogue(history, max_turns=2)
+        self.assertNotIn('Q1', text)
+        self.assertIn('Q2', text)
+        self.assertIn('A2', text)
+        self.assertIn('Q3', text)
+        self.assertIn('A3', text)
 
 
 if __name__ == '__main__':

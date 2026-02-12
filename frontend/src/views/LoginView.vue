@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { reactive } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
 
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
@@ -8,52 +9,65 @@ import { useAuthStore } from '../stores/auth'
 const router = useRouter()
 const authStore = useAuthStore()
 
-const email = ref('test@example.com')
-const password = ref('secret123')
-const displayName = ref('Tester')
-const error = ref('')
+const form = reactive({
+  email: 'test@example.com',
+  display_name: 'Tester',
+  password: 'secret123',
+})
 
-const register = async () => {
-  error.value = ''
+const login = async () => {
   try {
-    await api.post('/auth/register', {
-      email: email.value,
-      password: password.value,
-      display_name: displayName.value,
-    })
+    const res = await api.post('/auth/login', { email: form.email, password: form.password })
+    authStore.setToken(res.data.access_token)
+    ElMessage.success('登录成功')
+    await router.push('/chat')
   } catch (e: any) {
-    error.value = e.response?.data?.detail || '注册失败'
+    ElMessage.error(e.response?.data?.detail || '登录失败')
   }
 }
 
-const login = async () => {
-  error.value = ''
+const register = async () => {
   try {
-    const res = await api.post('/auth/login', { email: email.value, password: password.value })
-    authStore.setToken(res.data.access_token)
-    router.push('/dashboard')
+    await api.post('/auth/register', {
+      email: form.email,
+      password: form.password,
+      display_name: form.display_name,
+    })
+    ElMessage.success('注册成功，正在登录')
+    await login()
   } catch (e: any) {
-    error.value = e.response?.data?.detail || '登录失败'
+    const detail = e.response?.data?.detail
+    if (detail === 'Email already registered') {
+      ElMessage.warning('账号已存在，正在直接登录')
+      await login()
+      return
+    }
+    ElMessage.error(detail || '注册失败')
   }
 }
 </script>
 
 <template>
-  <main style="max-width: 420px; margin: 4rem auto; font-family: sans-serif">
-    <h1>AI Language Learn</h1>
-    <p>法语学习 MVP 登录</p>
-    <input v-model="email" placeholder="email" style="width: 100%; margin: 6px 0; padding: 8px" />
-    <input v-model="displayName" placeholder="display name" style="width: 100%; margin: 6px 0; padding: 8px" />
-    <input
-      v-model="password"
-      type="password"
-      placeholder="password"
-      style="width: 100%; margin: 6px 0; padding: 8px"
-    />
-    <div style="display: flex; gap: 8px; margin-top: 10px">
-      <button @click="register">注册</button>
-      <button @click="login">登录</button>
-    </div>
-    <p v-if="error" style="color: #b00020">{{ error }}</p>
-  </main>
+  <div class="login-page">
+    <el-card class="login-card" shadow="hover">
+      <template #header>
+        <div class="login-title">French AI Tutor</div>
+      </template>
+      <el-form label-position="top">
+        <el-form-item label="邮箱">
+          <el-input v-model="form.email" placeholder="请输入邮箱" />
+        </el-form-item>
+        <el-form-item label="显示名称">
+          <el-input v-model="form.display_name" placeholder="请输入显示名称" />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-input v-model="form.password" type="password" show-password placeholder="请输入密码" />
+        </el-form-item>
+        <div class="login-actions">
+          <el-button type="warning" plain @click="register">注册</el-button>
+          <el-button type="primary" @click="login">登录</el-button>
+        </div>
+      </el-form>
+    </el-card>
+  </div>
 </template>

@@ -16,8 +16,12 @@ class Settings(BaseSettings):
     llm_embedding_model: str = 'text-embedding-3-small'
     llm_embedding_dimension: int = 1536
     pgvector_ivfflat_lists: int = 100
+    cors_origins: str = 'http://127.0.0.1:5173,http://localhost:5173'
 
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
+
+    def get_cors_origins(self) -> list[str]:
+        return [item.strip() for item in self.cors_origins.split(',') if item.strip()]
 
 
 @lru_cache(maxsize=1)

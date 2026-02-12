@@ -35,6 +35,10 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
+Important:
+- The backend now uses real LLM API calls only.
+- Set `LLM_BASE_URL` and `LLM_API_KEY` in `/Users/hlwu/Documents/AILanguageLearn/backend/.env` before using knowledge upload/query features.
+
 3. 启动前端
 
 ```bash

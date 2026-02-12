@@ -24,3 +24,16 @@ def rank_by_similarity(question_embedding: list[float], candidates: list[dict], 
 
     scored.sort(key=lambda pair: pair[1], reverse=True)
     return [item for item, _ in scored[:top_k]]
+
+
+def format_recent_dialogue(history: list[dict], max_turns: int = 6) -> str:
+    latest_turns = history[-max_turns:] if max_turns > 0 else history
+    lines: list[str] = []
+    for turn in latest_turns:
+        question = str(turn.get('question', '')).strip()
+        answer = str(turn.get('answer', '')).strip()
+        if not question and not answer:
+            continue
+        lines.append(f"用户: {question}")
+        lines.append(f"助手: {answer}")
+    return '\n'.join(lines)
