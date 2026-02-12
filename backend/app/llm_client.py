@@ -1,11 +1,14 @@
 import json
+import logging
 from collections.abc import Iterator
+from typing import Union
 
 import httpx
 
 from app.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
@@ -26,13 +29,52 @@ class LLMClient:
             data = resp.json()
             return data['data'][0]['embedding']
 
-    def chat(self, system_prompt: str, user_prompt: str) -> str:
+    def rerank_texts(self, query: str, documents: list[str], top_k: int) -> list[dict[str, Union[float, int]]]:
+        model = settings.llm_rerank_model.strip()
+        if not model or not documents:
+            return []
         payload = {
-            'model': settings.llm_chat_model,
-            'messages': [
+            'model': model,
+            'query': query,
+            'documents': documents,
+            'top_n': min(max(top_k, 1), len(documents)),
+        }
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(f'{self.base_url}/rerank', headers=self._headers(), json=payload)
+                resp.raise_for_status()
+                body = resp.json()
+        except Exception as exc:
+            logger.warning('rerank request failed: %s', exc)
+            return []
+
+        results = body.get('results') or body.get('data') or []
+        parsed: list[dict[str, Union[float, int]]] = []
+        for item in results:
+            idx = item.get('index')
+            if not isinstance(idx, int):
+                continue
+            raw_score = item.get('relevance_score', item.get('score', 0.0))
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError):
+                continue
+            parsed.append({'index': idx, 'score': score})
+        parsed.sort(key=lambda entry: float(entry['score']), reverse=True)
+        return parsed[:top_k]
+
+    def chat(self, system_prompt: str, user_prompt: str) -> str:
+        return self.chat_messages(
+            [
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': user_prompt},
-            ],
+            ]
+        )
+
+    def chat_messages(self, messages: list[dict[str, str]]) -> str:
+        payload = {
+            'model': settings.llm_chat_model,
+            'messages': messages,
             'temperature': 0.2,
         }
         with httpx.Client(timeout=60) as client:
@@ -41,12 +83,17 @@ class LLMClient:
             return resp.json()['choices'][0]['message']['content']
 
     def stream_chat(self, system_prompt: str, user_prompt: str) -> Iterator[str]:
-        payload = {
-            'model': settings.llm_chat_model,
-            'messages': [
+        yield from self.stream_chat_messages(
+            [
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': user_prompt},
-            ],
+            ]
+        )
+
+    def stream_chat_messages(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        payload = {
+            'model': settings.llm_chat_model,
+            'messages': messages,
             'temperature': 0.2,
             'stream': True,
         }

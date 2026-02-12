@@ -1,11 +1,25 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Top, Expand, Fold, MoreFilled } from '@element-plus/icons-vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { CloseBold, Top } from '@element-plus/icons-vue'
+import { storeToRefs } from 'pinia'
 
 import api, { API_BASE_URL } from '../api/client'
 import { useAuthStore } from '../stores/auth'
+import { useChatStore } from '../stores/chat'
 import { renderMarkdownToHtml } from '../utils/markdownRender'
+
+type CitationItem = {
+  chunk_id: number
+  chunk_index?: number
+  preview: string
+  relevance_score?: number
+  document_id?: number
+  document_filename?: string
+  knowledge_base_id?: number
+  knowledge_base_name?: string
+}
 
 type InteractionItem = {
   id: number
@@ -13,25 +27,23 @@ type InteractionItem = {
   question: string
   answer: string
   trace_id: string
+  citations?: CitationItem[]
   created_at: string
 }
 
-type ConversationItem = {
-  id: number
-  title: string
-  created_at: string
-  updated_at: string
-}
-
-const loading = ref(false)
 const sending = ref(false)
 const question = ref('')
+const useMemoryStream = ref(true)
 const history = ref<InteractionItem[]>([])
-const conversations = ref<ConversationItem[]>([])
+const streamController = ref<AbortController | null>(null)
+const abortRequested = ref(false)
 const authStore = useAuthStore()
-const activeConversationId = ref<number | null>(null)
-const sidebarCollapsed = ref(false)
+const chatStore = useChatStore()
+const router = useRouter()
+const { activeConversationId } = storeToRefs(chatStore)
+const loadingMessages = ref(false)
 const dialogViewportRef = ref<HTMLElement | null>(null)
+const isEmptyState = computed(() => history.value.length === 0)
 
 const setDialogViewportRef = (el: Element | null) => {
   dialogViewportRef.value = el as HTMLElement | null
@@ -47,31 +59,8 @@ const scrollToBottom = async (smooth = false) => {
   })
 }
 
-const loadConversations = async () => {
-  loading.value = true
-  try {
-    const res = await api.get('/interactions/conversations?limit=50')
-    conversations.value = res.data
-    if (!activeConversationId.value && conversations.value.length > 0) {
-      await switchConversation(conversations.value[0].id)
-    }
-  } catch (e: any) {
-    conversations.value = []
-    ElMessage.error(e.response?.data?.detail || e.message || '会话列表加载失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-const startNewConversation = () => {
-  activeConversationId.value = null
-  history.value = []
-  question.value = ''
-}
-
-const switchConversation = async (conversationId: number) => {
-  activeConversationId.value = conversationId
-  loading.value = true
+const loadMessagesByConversationId = async (conversationId: number) => {
+  loadingMessages.value = true
   try {
     const res = await api.get(`/interactions/conversations/${conversationId}/messages?limit=200`)
     history.value = res.data
@@ -80,57 +69,19 @@ const switchConversation = async (conversationId: number) => {
     history.value = []
     ElMessage.error(e.response?.data?.detail || e.message || '会话消息加载失败')
   } finally {
-    loading.value = false
+    loadingMessages.value = false
   }
 }
 
-const renameConversation = async (item: ConversationItem) => {
-  try {
-    const result = await ElMessageBox.prompt('请输入新的会话标题', '重命名会话', {
-      inputValue: item.title,
-      confirmButtonText: '保存',
-      cancelButtonText: '取消',
-    })
-    const title = result.value.trim()
-    if (!title) return
-    const res = await api.patch(`/interactions/conversations/${item.id}`, { title })
-    if (res.data?.updated) {
-      ElMessage.success('已重命名')
-      await loadConversations()
-    }
-  } catch {
-    // ignore cancel
-  }
+const MEMORY_SWITCH_STORAGE_KEY = 'chat.useMemoryStream'
+const savedMemorySwitch = window.localStorage.getItem(MEMORY_SWITCH_STORAGE_KEY)
+if (savedMemorySwitch === '0') {
+  useMemoryStream.value = false
 }
 
-const deleteConversation = async (item: ConversationItem) => {
-  try {
-    await ElMessageBox.confirm(`确认删除会话「${item.title}」？`, '删除会话', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    const res = await api.delete(`/interactions/conversations/${item.id}`)
-    if (res.data?.deleted) {
-      if (activeConversationId.value === item.id) {
-        activeConversationId.value = null
-        history.value = []
-      }
-      ElMessage.success('会话已删除')
-      await loadConversations()
-    }
-  } catch {
-    // ignore cancel
-  }
-}
-
-const onConversationCommand = async (command: string, item: ConversationItem) => {
-  if (command === 'rename') {
-    await renameConversation(item)
-  } else if (command === 'delete') {
-    await deleteConversation(item)
-  }
-}
+watch(useMemoryStream, (enabled) => {
+  window.localStorage.setItem(MEMORY_SWITCH_STORAGE_KEY, enabled ? '1' : '0')
+})
 
 const send = async () => {
   const content = question.value.trim()
@@ -140,7 +91,6 @@ const send = async () => {
     return
   }
 
-  question.value = ''
   sending.value = true
   let streamCompleted = false
   let streamHasOutput = false
@@ -148,15 +98,19 @@ const send = async () => {
   let resolvedConversationId = activeConversationId.value
   try {
     currentId = Number(new Date().getTime())
+    abortRequested.value = false
+    const controller = new AbortController()
+    streamController.value = controller
     history.value.push({
       id: currentId,
       conversation_id: resolvedConversationId || undefined,
       question: content,
       answer: '',
       trace_id: '',
+      citations: [],
       created_at: new Date().toISOString(),
     })
-    await scrollToBottom(true)
+    question.value = ''
 
     const response = await fetch(`${API_BASE_URL}/query/stream`, {
       method: 'POST',
@@ -164,9 +118,11 @@ const send = async () => {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authStore.token}`,
       },
+      signal: controller.signal,
       body: JSON.stringify({
         question: content,
-        conversation_id: activeConversationId.value,
+        conversation_id: activeConversationId.value || undefined,
+        use_memory_stream: useMemoryStream.value,
       }),
     })
     if (!response.ok || !response.body) {
@@ -204,24 +160,29 @@ const send = async () => {
         if (!target) continue
 
         if (payload.type === 'start') {
+          if (Array.isArray(payload.citations)) {
+            target.citations = payload.citations
+          }
           if (typeof payload.conversation_id === 'number') {
             resolvedConversationId = payload.conversation_id
-            activeConversationId.value = payload.conversation_id
+            chatStore.setActiveConversation(payload.conversation_id)
             target.conversation_id = payload.conversation_id
           }
         } else if (payload.type === 'chunk') {
           streamHasOutput = true
           target.answer += payload.content || ''
-          await scrollToBottom()
         } else if (payload.type === 'done') {
           streamCompleted = true
           target.trace_id = payload.trace_id || target.trace_id
+          if (Array.isArray(payload.citations)) {
+            target.citations = payload.citations
+          }
           if (typeof payload.conversation_id === 'number') {
             resolvedConversationId = payload.conversation_id
-            activeConversationId.value = payload.conversation_id
+            chatStore.setActiveConversation(payload.conversation_id)
             target.conversation_id = payload.conversation_id
           }
-          await loadConversations()
+          await chatStore.loadConversations()
           await scrollToBottom()
         } else if (payload.type === 'error') {
           throw new Error(payload.message || '流式响应异常')
@@ -229,6 +190,9 @@ const send = async () => {
       }
     }
   } catch (e: any) {
+    if (abortRequested.value || e?.name === 'AbortError') {
+      return
+    }
     // Some providers close SSE sockets abruptly after final token.
     // If we already rendered content or got done signal, treat it as successful completion.
     if (streamCompleted || streamHasOutput) {
@@ -241,11 +205,27 @@ const send = async () => {
     ElMessage.error(e.response?.data?.detail || e.message || '发送失败')
   } finally {
     sending.value = false
+    streamController.value = null
+    abortRequested.value = false
     if (resolvedConversationId && !activeConversationId.value) {
-      activeConversationId.value = resolvedConversationId
+      chatStore.setActiveConversation(resolvedConversationId)
     }
-    void loadConversations()
+    void chatStore.loadConversations()
   }
+}
+
+const stopReply = () => {
+  if (!sending.value || !streamController.value) return
+  abortRequested.value = true
+  streamController.value.abort()
+}
+
+const onSendButtonClick = () => {
+  if (sending.value) {
+    stopReply()
+    return
+  }
+  void send()
 }
 
 const onKeydown = (event: KeyboardEvent) => {
@@ -258,76 +238,50 @@ const onKeydown = (event: KeyboardEvent) => {
   }
 }
 
-onMounted(() => {
-  void loadConversations()
+const openCitation = async (item: CitationItem) => {
+  if (!item.document_id) return
+  await router.push({
+    path: '/knowledge',
+    query: {
+      docId: String(item.document_id),
+      baseId: item.knowledge_base_id ? String(item.knowledge_base_id) : undefined,
+      chunkId: item.chunk_id ? String(item.chunk_id) : undefined,
+    },
+  })
+}
+
+const activeConversationIdRef = computed(() => activeConversationId.value)
+
+watch(
+  activeConversationIdRef,
+  async (conversationId) => {
+    // Keep in-flight streamed message stable; avoid replacing local optimistic history.
+    if (sending.value) {
+      return
+    }
+    if (!conversationId) {
+      history.value = []
+      question.value = ''
+      return
+    }
+    await loadMessagesByConversationId(conversationId)
+  },
+  { immediate: true },
+)
+
+watch(loadingMessages, async (loading) => {
+  if (!loading) {
+    await scrollToBottom()
+  }
 })
 </script>
 
 <template>
-  <div class="chat-layout" :class="{ 'chat-layout--sidebar-collapsed': sidebarCollapsed }">
-    <el-button
-      v-if="sidebarCollapsed"
-      class="sidebar-float-btn"
-      type="primary"
-      :icon="Expand"
-      circle
-      @click="sidebarCollapsed = false"
-    />
-
-    <div v-if="!sidebarCollapsed" class="chat-col chat-sidebar">
-      <div class="chat-drawer-panel">
-        <div class="card-header-row chat-drawer-header">
-          <el-button size="small" text :icon="Fold" @click="sidebarCollapsed = true">
-            收起
-          </el-button>
-        </div>
-
-        <div class="new-chat-row">
-          <el-button type="primary" class="new-chat-btn" @click="startNewConversation">
-            <el-icon><Plus /></el-icon>
-            <span>开启新会话</span>
-          </el-button>
-        </div>
-
-        <el-scrollbar class="history-scroll">
-          <button
-            v-for="item in conversations"
-            :key="item.id"
-            type="button"
-            class="history-item"
-            :class="{ active: item.id === activeConversationId }"
-            @click="switchConversation(item.id)"
-          >
-            <div class="history-item-row">
-              <div class="history-item-main">
-                <div class="history-question">{{ item.title }}</div>
-                <div class="history-meta">{{ item.updated_at }}</div>
-              </div>
-              <el-dropdown
-                trigger="click"
-                @command="(cmd: string) => onConversationCommand(cmd, item)"
-                @click.stop
-              >
-                <el-button text size="small" class="history-more-btn" @click.stop>
-                  <el-icon><MoreFilled /></el-icon>
-                </el-button>
-                <template #dropdown>
-                  <el-dropdown-menu>
-                    <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                    <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-            </div>
-          </button>
-        </el-scrollbar>
-      </div>
-    </div>
-
+  <div class="chat-layout">
     <div class="chat-col chat-content">
       <el-card shadow="never" class="chat-card chat-card--fill chat-content-card">
-        <div class="chat-main-panel">
-          <div class="dialog-scroll" :ref="setDialogViewportRef">
+        <div class="chat-main-panel" :class="{ 'chat-main-panel--empty': isEmptyState }">
+          <div v-if="!isEmptyState" class="dialog-scroll" :ref="setDialogViewportRef">
             <div
               v-for="item in history"
               :key="`chat-${item.id}`"
@@ -352,9 +306,32 @@ onMounted(() => {
                   </template>
                 </div>
               </div>
+              <div v-if="item.citations && item.citations.length > 0" class="message-row assistant">
+                <div class="avatar avatar--ghost" />
+                <div class="bubble-citations">
+                  <div class="bubble-citations-title">参考资料</div>
+                  <button
+                    v-for="citation in item.citations"
+                    :key="`${item.id}-citation-${citation.chunk_id}`"
+                    class="bubble-citation-link"
+                    type="button"
+                    @click="openCitation(citation)"
+                  >
+                    <span class="bubble-citation-name">{{ citation.document_filename || `文档 #${citation.document_id || '-'}` }}</span>
+                    <span class="bubble-citation-preview">{{ citation.preview }}</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-          <div class="chat-composer">
+
+          <div v-if="isEmptyState" class="chat-empty-hero">
+            <div class="chat-empty-title">
+              <span>Hi! 👋 我是你的语言学习助手</span>
+            </div>
+          </div>
+
+          <div class="chat-composer" :class="{ 'chat-composer--empty': isEmptyState }">
             <div class="composer-shell">
               <el-input
                 v-model="question"
@@ -364,13 +341,23 @@ onMounted(() => {
                 placeholder="输入消息（Enter 发送，Shift+Enter 换行）"
                 @keydown="onKeydown"
               />
+              <div class="composer-controls">
+                <el-button
+                  size="small"
+                  class="memory-toggle-btn"
+                  :type="useMemoryStream ? 'primary' : 'default'"
+                  plain
+                  @click="useMemoryStream = !useMemoryStream"
+                >
+                  记忆流
+                </el-button>
+              </div>
               <el-button
                 class="send-icon-btn"
-                type="primary"
-                :icon="Top"
+                :type="sending ? 'danger' : 'primary'"
+                :icon="sending ? CloseBold : Top"
                 circle
-                :loading="sending"
-                @click="send"
+                @click="onSendButtonClick"
               />
             </div>
           </div>

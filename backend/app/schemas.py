@@ -23,11 +23,13 @@ class UserResponse(BaseModel):
     id: int
     email: EmailStr
     display_name: str
+    is_admin: bool = False
 
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=2)
     conversation_id: Optional[int] = None
+    use_memory_stream: bool = True
 
 
 class QueryResponse(BaseModel):
@@ -61,3 +63,38 @@ class MemoryResponse(BaseModel):
     mastery: dict
     weak_points: list[str]
     last_difficulty: int
+
+
+class MemoryStreamItemResponse(BaseModel):
+    id: int
+    category: str
+    memory_key: str
+    content: str
+    importance: float
+    source_conversation_id: Optional[int] = None
+    source_interaction_id: Optional[int] = None
+    created_at: str
+    updated_at: str
+
+
+class MemoryStreamChangeResponse(BaseModel):
+    id: int
+    item_id: Optional[int] = None
+    action: str
+    reason: Optional[str] = None
+    before_state: dict
+    after_state: dict
+    source_conversation_id: Optional[int] = None
+    source_interaction_id: Optional[int] = None
+    created_at: str
+
+
+class MemoryStreamResponse(BaseModel):
+    items: list[MemoryStreamItemResponse]
+    changes: list[MemoryStreamChangeResponse]
+
+
+class MemoryItemUpdateRequest(BaseModel):
+    content: Optional[str] = None
+    importance: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    reason: Optional[str] = None

@@ -18,7 +18,11 @@ def query(
     current_user: User = Depends(get_current_user),
 ) -> QueryResponse:
     answer, citations, trace_id, conversation_id = answer_question(
-        db, current_user.id, payload.question, conversation_id=payload.conversation_id
+        db,
+        current_user.id,
+        payload.question,
+        conversation_id=payload.conversation_id,
+        use_memory_stream=payload.use_memory_stream,
     )
     return QueryResponse(
         answer=answer,
@@ -39,6 +43,7 @@ def query_stream(
         current_user.id,
         payload.question,
         conversation_id=payload.conversation_id,
+        use_memory_stream=payload.use_memory_stream,
     )
     return StreamingResponse(
         stream,

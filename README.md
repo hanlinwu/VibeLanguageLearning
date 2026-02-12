@@ -38,6 +38,8 @@ uvicorn app.main:app --reload
 Important:
 - The backend now uses real LLM API calls only.
 - Set `LLM_BASE_URL` and `LLM_API_KEY` in `/Users/hlwu/Documents/AILanguageLearn/backend/.env` before using knowledge upload/query features.
+- If you need public knowledge bases, set `ADMIN_EMAILS` (comma-separated) in `/Users/hlwu/Documents/AILanguageLearn/backend/.env`.
+  Accounts in `ADMIN_EMAILS` can create/manage `scope=public` knowledge bases.
 
 3. 启动前端
 

@@ -15,6 +15,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(120))
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -52,6 +53,7 @@ class KnowledgeBase(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
     name: Mapped[str] = mapped_column(String(120))
+    scope: Mapped[str] = mapped_column(String(16), default='private')
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -66,6 +68,45 @@ class LearningMemory(Base):
     weak_points: Mapped[list[str]] = mapped_column(JSON, default=list)
     last_difficulty: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MemoryStreamItem(Base):
+    __tablename__ = 'memory_stream_items'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    memory_key: Mapped[str] = mapped_column(String(160), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    importance: Mapped[float] = mapped_column(Float, default=0.5)
+    source_conversation_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey('chat_conversations.id'), nullable=True, index=True
+    )
+    source_interaction_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey('interaction_logs.id'), nullable=True, index=True
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MemoryStreamChange(Base):
+    __tablename__ = 'memory_stream_changes'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
+    item_id: Mapped[Optional[int]] = mapped_column(ForeignKey('memory_stream_items.id'), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    before_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    after_state: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_conversation_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey('chat_conversations.id'), nullable=True, index=True
+    )
+    source_interaction_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey('interaction_logs.id'), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class QuizAttempt(Base):

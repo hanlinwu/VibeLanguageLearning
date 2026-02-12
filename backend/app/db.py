@@ -45,6 +45,7 @@ def bootstrap_pgvector_index(engine_obj: Engine, lists: int) -> None:
 def bootstrap_schema_compat(engine_obj: Engine) -> None:
     with engine_obj.begin() as conn:
         if engine_obj.dialect.name == 'postgresql':
+            conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE'))
             conn.execute(
                 text(
                     'ALTER TABLE interaction_logs '
@@ -87,6 +88,8 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                     'REFERENCES knowledge_bases(id)'
                 )
             )
+            conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS scope VARCHAR(16)"))
+            conn.execute(text("UPDATE knowledge_bases SET scope = COALESCE(scope, 'private')"))
             conn.execute(text("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS status VARCHAR(24)"))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS progress INTEGER'))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS total_chunks INTEGER'))
@@ -142,6 +145,11 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
             return
 
         if engine_obj.dialect.name == 'sqlite':
+            user_columns = conn.execute(text("PRAGMA table_info('users')")).fetchall()
+            user_column_names = {row[1] for row in user_columns}
+            if 'is_admin' not in user_column_names:
+                conn.execute(text('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'))
+
             columns = conn.execute(text("PRAGMA table_info('interaction_logs')")).fetchall()
             column_names = {row[1] for row in columns}
             if 'conversation_id' not in column_names:
@@ -201,6 +209,11 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                     'ON knowledge_documents(knowledge_base_id)'
                 )
             )
+            base_columns = conn.execute(text("PRAGMA table_info('knowledge_bases')")).fetchall()
+            base_column_names = {row[1] for row in base_columns}
+            if 'scope' not in base_column_names:
+                conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN scope TEXT DEFAULT 'private'"))
+            conn.execute(text("UPDATE knowledge_bases SET scope = COALESCE(scope, 'private')"))
             conn.execute(text("UPDATE knowledge_documents SET status = COALESCE(status, 'completed')"))
             conn.execute(text('UPDATE knowledge_documents SET progress = COALESCE(progress, 100)'))
             conn.execute(

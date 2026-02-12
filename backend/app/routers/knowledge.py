@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_db
@@ -17,28 +17,47 @@ router = APIRouter(prefix='/knowledge', tags=['knowledge'])
 
 class KnowledgeBaseCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    scope: str = Field(default='private')
     is_enabled: bool = True
 
 
 class KnowledgeBaseUpdateRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    scope: Optional[str] = None
     is_enabled: Optional[bool] = None
 
 
 def _ensure_default_base(db: Session, user_id: int) -> KnowledgeBase:
     base = (
         db.query(KnowledgeBase)
-        .filter(KnowledgeBase.owner_id == user_id)
+        .filter(KnowledgeBase.owner_id == user_id, KnowledgeBase.scope == 'private')
         .order_by(KnowledgeBase.created_at.asc())
         .first()
     )
     if base is not None:
         return base
-    base = KnowledgeBase(owner_id=user_id, name='默认知识库', is_enabled=True)
+    base = KnowledgeBase(owner_id=user_id, name='默认知识库', scope='private', is_enabled=True)
     db.add(base)
     db.commit()
     db.refresh(base)
     return base
+
+
+def _normalize_scope(scope: str) -> str:
+    value = (scope or '').strip().lower()
+    if value not in {'private', 'public'}:
+        raise HTTPException(status_code=400, detail='Invalid knowledge base scope')
+    return value
+
+
+def _can_manage_base(current_user: User, base: KnowledgeBase) -> bool:
+    if base.scope == 'public':
+        return bool(current_user.is_admin)
+    return base.owner_id == current_user.id
+
+
+def _is_base_visible(current_user: User, base: KnowledgeBase) -> bool:
+    return base.scope == 'public' or base.owner_id == current_user.id
 
 
 def _update_document_progress(
@@ -133,13 +152,22 @@ def create_base(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    base = KnowledgeBase(owner_id=current_user.id, name=payload.name.strip(), is_enabled=payload.is_enabled)
+    scope = _normalize_scope(payload.scope)
+    if scope == 'public' and not current_user.is_admin:
+        raise HTTPException(status_code=403, detail='Only admin can create public knowledge base')
+    base = KnowledgeBase(
+        owner_id=current_user.id,
+        name=payload.name.strip(),
+        scope=scope,
+        is_enabled=payload.is_enabled,
+    )
     db.add(base)
     db.commit()
     db.refresh(base)
     return {
         'id': base.id,
         'name': base.name,
+        'scope': base.scope,
         'is_enabled': base.is_enabled,
         'created_at': base.created_at.isoformat(),
         'updated_at': base.updated_at.isoformat(),
@@ -149,25 +177,22 @@ def create_base(
 @router.get('/bases')
 def list_bases(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[dict]:
     _ensure_default_base(db, current_user.id)
-    bases = (
-        db.query(KnowledgeBase)
-        .filter(KnowledgeBase.owner_id == current_user.id)
-        .order_by(KnowledgeBase.updated_at.desc())
-        .all()
-    )
+    bases = db.query(KnowledgeBase).filter(
+        or_(KnowledgeBase.owner_id == current_user.id, KnowledgeBase.scope == 'public')
+    ).order_by(KnowledgeBase.updated_at.desc()).all()
 
     response: list[dict] = []
     for base in bases:
         doc_count = (
             db.query(func.count(KnowledgeDocument.id))
-            .filter(KnowledgeDocument.knowledge_base_id == base.id, KnowledgeDocument.owner_id == current_user.id)
+            .filter(KnowledgeDocument.knowledge_base_id == base.id)
             .scalar()
             or 0
         )
         chunk_count = (
             db.query(func.count(KnowledgeChunk.id))
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
-            .filter(KnowledgeDocument.knowledge_base_id == base.id, KnowledgeDocument.owner_id == current_user.id)
+            .filter(KnowledgeDocument.knowledge_base_id == base.id)
             .scalar()
             or 0
         )
@@ -175,7 +200,9 @@ def list_bases(db: Session = Depends(get_db), current_user: User = Depends(get_c
             {
                 'id': base.id,
                 'name': base.name,
+                'scope': base.scope,
                 'is_enabled': base.is_enabled,
+                'can_manage': _can_manage_base(current_user, base),
                 'document_count': int(doc_count),
                 'chunk_count': int(chunk_count),
                 'created_at': base.created_at.isoformat(),
@@ -192,11 +219,18 @@ def update_base(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    base = db.query(KnowledgeBase).filter(KnowledgeBase.id == base_id, KnowledgeBase.owner_id == current_user.id).first()
+    base = db.query(KnowledgeBase).filter(KnowledgeBase.id == base_id).first()
     if base is None:
         raise HTTPException(status_code=404, detail='Knowledge base not found')
+    if not _can_manage_base(current_user, base):
+        raise HTTPException(status_code=403, detail='No permission to modify this knowledge base')
     if payload.name is not None:
         base.name = payload.name.strip()
+    if payload.scope is not None:
+        scope = _normalize_scope(payload.scope)
+        if scope == 'public' and not current_user.is_admin:
+            raise HTTPException(status_code=403, detail='Only admin can set public knowledge base')
+        base.scope = scope
     if payload.is_enabled is not None:
         base.is_enabled = payload.is_enabled
     base.updated_at = datetime.utcnow()
@@ -206,6 +240,7 @@ def update_base(
     return {
         'id': base.id,
         'name': base.name,
+        'scope': base.scope,
         'is_enabled': base.is_enabled,
         'created_at': base.created_at.isoformat(),
         'updated_at': base.updated_at.isoformat(),
@@ -227,13 +262,11 @@ def upload_knowledge(
     if knowledge_base_id is None:
         base = _ensure_default_base(db, current_user.id)
     else:
-        base = (
-            db.query(KnowledgeBase)
-            .filter(KnowledgeBase.id == knowledge_base_id, KnowledgeBase.owner_id == current_user.id)
-            .first()
-        )
+        base = db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_id).first()
         if base is None:
             raise HTTPException(status_code=404, detail='Knowledge base not found')
+        if not _can_manage_base(current_user, base):
+            raise HTTPException(status_code=403, detail='No permission to upload to this knowledge base')
 
     content = file.file.read()
     doc = KnowledgeDocument(
@@ -268,8 +301,22 @@ def list_docs(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    query = db.query(KnowledgeDocument).filter(KnowledgeDocument.owner_id == current_user.id)
+    query = (
+        db.query(KnowledgeDocument)
+        .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
+        .filter(
+            or_(
+                KnowledgeBase.scope == 'public',
+                and_(KnowledgeBase.scope == 'private', KnowledgeBase.owner_id == current_user.id),
+            )
+        )
+    )
     if knowledge_base_id is not None:
+        base = db.query(KnowledgeBase).filter(KnowledgeBase.id == knowledge_base_id).first()
+        if base is None:
+            return []
+        if not _is_base_visible(current_user, base):
+            return []
         query = query.filter(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
     docs = query.order_by(KnowledgeDocument.created_at.desc()).all()
     return [

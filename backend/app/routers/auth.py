@@ -4,10 +4,12 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import User
+from app.config import get_settings
 from app.schemas import AuthResponse, LoginRequest, RegisterRequest, UserResponse
 from app.security import create_access_token, hash_password, verify_password
 
 router = APIRouter(prefix='/auth', tags=['auth'])
+settings = get_settings()
 
 
 @router.post('/register', response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -20,11 +22,12 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> UserRes
         email=payload.email,
         password_hash=hash_password(payload.password),
         display_name=payload.display_name,
+        is_admin=payload.email.lower() in settings.get_admin_emails(),
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    return UserResponse(id=user.id, email=user.email, display_name=user.display_name)
+    return UserResponse(id=user.id, email=user.email, display_name=user.display_name, is_admin=bool(user.is_admin))
 
 
 @router.post('/login', response_model=AuthResponse)
@@ -32,6 +35,11 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
     user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail='Invalid credentials')
+    should_admin = user.email.lower() in settings.get_admin_emails()
+    if bool(user.is_admin) != should_admin:
+        user.is_admin = should_admin
+        db.add(user)
+        db.commit()
 
     token = create_access_token(str(user.id))
     return AuthResponse(access_token=token)
@@ -39,4 +47,9 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
 
 @router.get('/me', response_model=UserResponse)
 def me(current_user: User = Depends(get_current_user)) -> UserResponse:
-    return UserResponse(id=current_user.id, email=current_user.email, display_name=current_user.display_name)
+    return UserResponse(
+        id=current_user.id,
+        email=current_user.email,
+        display_name=current_user.display_name,
+        is_admin=bool(current_user.is_admin),
+    )

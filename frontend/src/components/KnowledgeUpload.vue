@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 
@@ -8,6 +9,8 @@ import api from '../api/client'
 type KnowledgeBaseItem = {
   id: number
   name: string
+  scope?: 'private' | 'public'
+  can_manage?: boolean
   is_enabled: boolean
   document_count: number
   chunk_count: number
@@ -32,13 +35,22 @@ type KnowledgeDocItem = {
 const loadingBases = ref(false)
 const loadingDocs = ref(false)
 const uploading = ref(false)
+const isAdmin = ref(false)
 const bases = ref<KnowledgeBaseItem[]>([])
 const docs = ref<KnowledgeDocItem[]>([])
 const selectedBaseId = ref<number | null>(null)
+const highlightedDocId = ref<number | null>(null)
+const route = useRoute()
 let pollTimer: number | null = null
 
 const processingStatuses = new Set(['queued', 'slicing', 'embedding'])
 const hasProcessingDocs = computed(() => docs.value.some((d) => processingStatuses.has(d.status)))
+const selectedBaseCanManage = computed(() => {
+  const base = bases.value.find((item) => item.id === selectedBaseId.value)
+  return base ? base.can_manage !== false : false
+})
+const privateBases = computed(() => bases.value.filter((item) => (item.scope || 'private') === 'private'))
+const publicBases = computed(() => bases.value.filter((item) => item.scope === 'public'))
 
 const stopPolling = () => {
   if (pollTimer !== null) {
@@ -85,7 +97,7 @@ const loadDocs = async (baseId: number) => {
   }
 }
 
-const createBase = async () => {
+const createBase = async (scope: 'private' | 'public' = 'private') => {
   try {
     const result = await ElMessageBox.prompt('请输入知识库名称', '新建知识库', {
       confirmButtonText: '创建',
@@ -94,7 +106,7 @@ const createBase = async () => {
     })
     const name = result.value.trim()
     if (!name) return
-    await api.post('/knowledge/bases', { name, is_enabled: true })
+    await api.post('/knowledge/bases', { name, scope, is_enabled: true })
     await loadBases()
     if (bases.value.length > 0) {
       selectedBaseId.value = bases.value[0].id
@@ -103,6 +115,15 @@ const createBase = async () => {
     ElMessage.success('知识库已创建')
   } catch {
     // ignore cancel
+  }
+}
+
+const loadCurrentUser = async () => {
+  try {
+    const res = await api.get('/auth/me')
+    isAdmin.value = !!res.data?.is_admin
+  } catch {
+    isAdmin.value = false
   }
 }
 
@@ -129,6 +150,27 @@ const onBaseChange = async () => {
     stopPolling()
   }
 }
+
+const parseRouteInt = (value: unknown): number | null => {
+  if (typeof value !== 'string') return null
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const applyRouteSelection = async () => {
+  const baseId = parseRouteInt(route.query.baseId)
+  const docId = parseRouteInt(route.query.docId)
+  highlightedDocId.value = docId
+  if (baseId && bases.value.some((base) => base.id === baseId) && selectedBaseId.value !== baseId) {
+    selectedBaseId.value = baseId
+  }
+  if (selectedBaseId.value) {
+    await loadDocs(selectedBaseId.value)
+  }
+}
+
+const docRowClassName = ({ row }: { row: KnowledgeDocItem }) =>
+  highlightedDocId.value && row.id === highlightedDocId.value ? 'knowledge-doc-row--highlight' : ''
 
 const customUpload = async (options: UploadRequestOptions) => {
   if (!selectedBaseId.value) {
@@ -166,14 +208,20 @@ const formatStatus = (status: string) => {
 }
 
 onMounted(async () => {
+  await loadCurrentUser()
   await loadBases()
-  if (selectedBaseId.value) {
-    await loadDocs(selectedBaseId.value)
-  }
+  await applyRouteSelection()
   if (hasProcessingDocs.value) {
     startPolling()
   }
 })
+
+watch(
+  () => route.query,
+  () => {
+    void applyRouteSelection()
+  },
+)
 
 onBeforeUnmount(() => {
   stopPolling()
@@ -185,31 +233,60 @@ onBeforeUnmount(() => {
     <el-card shadow="never" class="knowledge-bases-card">
       <template #header>
         <div class="card-header-row">
-          <span>知识库</span>
+          <span />
           <div class="row">
-            <el-button size="small" @click="createBase">新建</el-button>
+            <el-button size="small" @click="createBase('private')">新建私有</el-button>
+            <el-button v-if="isAdmin" size="small" type="warning" plain @click="createBase('public')">新建公共</el-button>
             <el-button size="small" :loading="loadingBases" @click="loadBases">刷新</el-button>
           </div>
         </div>
       </template>
 
       <el-scrollbar class="knowledge-base-scroll">
-        <div
-          v-for="base in bases"
-          :key="base.id"
-          class="knowledge-base-item"
-          :class="{ active: base.id === selectedBaseId }"
-          @click="selectedBaseId = base.id; void onBaseChange()"
-        >
-          <div class="knowledge-base-main">
-            <div class="knowledge-base-name">{{ base.name }}</div>
-            <div class="knowledge-base-meta">文档 {{ base.document_count }} · 切片 {{ base.chunk_count }}</div>
+        <div class="knowledge-base-group">
+          <div class="knowledge-base-group-title">私有</div>
+          <div v-if="privateBases.length === 0" class="knowledge-base-empty">暂无私有知识库</div>
+          <div
+            v-for="base in privateBases"
+            :key="base.id"
+            class="knowledge-base-item"
+            :class="{ active: base.id === selectedBaseId }"
+            @click="selectedBaseId = base.id; void onBaseChange()"
+          >
+            <div class="knowledge-base-main">
+              <div class="knowledge-base-name">{{ base.name }}</div>
+              <div class="knowledge-base-meta">文档 {{ base.document_count }} · 切片 {{ base.chunk_count }}</div>
+            </div>
+            <el-switch
+              :model-value="base.is_enabled"
+              :disabled="base.can_manage === false"
+              @change="(val: string | number | boolean) => toggleBase(base, !!val)"
+              @click.stop
+            />
           </div>
-          <el-switch
-            :model-value="base.is_enabled"
-            @change="(val: string | number | boolean) => toggleBase(base, !!val)"
-            @click.stop
-          />
+        </div>
+
+        <div class="knowledge-base-group knowledge-base-group--public">
+          <div class="knowledge-base-group-title">公共</div>
+          <div v-if="publicBases.length === 0" class="knowledge-base-empty">暂无公共知识库</div>
+          <div
+            v-for="base in publicBases"
+            :key="base.id"
+            class="knowledge-base-item"
+            :class="{ active: base.id === selectedBaseId }"
+            @click="selectedBaseId = base.id; void onBaseChange()"
+          >
+            <div class="knowledge-base-main">
+              <div class="knowledge-base-name">{{ base.name }}</div>
+              <div class="knowledge-base-meta">文档 {{ base.document_count }} · 切片 {{ base.chunk_count }}</div>
+            </div>
+            <el-switch
+              :model-value="base.is_enabled"
+              :disabled="base.can_manage === false"
+              @change="(val: string | number | boolean) => toggleBase(base, !!val)"
+              @click.stop
+            />
+          </div>
         </div>
       </el-scrollbar>
     </el-card>
@@ -228,14 +305,20 @@ onBeforeUnmount(() => {
         drag
         :show-file-list="false"
         :http-request="customUpload"
-        :disabled="uploading || !selectedBaseId"
+        :disabled="uploading || !selectedBaseId || !selectedBaseCanManage"
         accept=".md,.markdown,.json,.txt,.pdf,.docx"
       >
         <div style="font-size: 16px; margin-bottom: 6px">上传文档到当前知识库</div>
         <div>支持 Markdown / JSON / TXT / PDF / DOCX</div>
       </el-upload>
 
-      <el-table :data="docs" style="margin-top: 14px" v-loading="loadingDocs" size="small">
+      <el-table
+        :data="docs"
+        :row-class-name="docRowClassName"
+        style="margin-top: 14px"
+        v-loading="loadingDocs"
+        size="small"
+      >
         <el-table-column prop="filename" label="文档" min-width="180" />
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
