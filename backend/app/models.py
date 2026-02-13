@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -27,6 +27,9 @@ class KnowledgeDocument(Base):
     knowledge_base_id: Mapped[Optional[int]] = mapped_column(ForeignKey('knowledge_bases.id'), index=True, nullable=True)
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(120))
+    raw_content: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(24), default='queued')
     progress: Mapped[int] = mapped_column(Integer, default=0)
     total_chunks: Mapped[int] = mapped_column(Integer, default=0)

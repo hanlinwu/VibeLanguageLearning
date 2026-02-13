@@ -91,6 +91,9 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
             conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS scope VARCHAR(16)"))
             conn.execute(text("UPDATE knowledge_bases SET scope = COALESCE(scope, 'private')"))
             conn.execute(text("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS status VARCHAR(24)"))
+            conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS raw_content BYTEA'))
+            conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS file_size INTEGER'))
+            conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL'))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS progress INTEGER'))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS total_chunks INTEGER'))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS processed_chunks INTEGER'))
@@ -103,6 +106,7 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                 )
             )
             conn.execute(text("UPDATE knowledge_documents SET status = COALESCE(status, 'completed')"))
+            conn.execute(text('UPDATE knowledge_documents SET file_size = COALESCE(file_size, 0)'))
             conn.execute(text('UPDATE knowledge_documents SET progress = COALESCE(progress, 100)'))
             conn.execute(
                 text(
@@ -192,6 +196,12 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                 conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN knowledge_base_id INTEGER'))
             if 'status' not in doc_column_names:
                 conn.execute(text("ALTER TABLE knowledge_documents ADD COLUMN status TEXT DEFAULT 'completed'"))
+            if 'raw_content' not in doc_column_names:
+                conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN raw_content BLOB'))
+            if 'file_size' not in doc_column_names:
+                conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN file_size INTEGER DEFAULT 0'))
+            if 'deleted_at' not in doc_column_names:
+                conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN deleted_at TEXT'))
             if 'progress' not in doc_column_names:
                 conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN progress INTEGER DEFAULT 100'))
             if 'total_chunks' not in doc_column_names:
@@ -215,6 +225,7 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                 conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN scope TEXT DEFAULT 'private'"))
             conn.execute(text("UPDATE knowledge_bases SET scope = COALESCE(scope, 'private')"))
             conn.execute(text("UPDATE knowledge_documents SET status = COALESCE(status, 'completed')"))
+            conn.execute(text('UPDATE knowledge_documents SET file_size = COALESCE(file_size, 0)'))
             conn.execute(text('UPDATE knowledge_documents SET progress = COALESCE(progress, 100)'))
             conn.execute(
                 text(

@@ -23,6 +23,8 @@ type KnowledgeDocItem = {
   knowledge_base_id: number
   filename: string
   content_type: string
+  file_size?: number
+  deleted_at?: string | null
   status: string
   progress: number
   total_chunks: number
@@ -36,6 +38,7 @@ const loadingBases = ref(false)
 const loadingDocs = ref(false)
 const uploading = ref(false)
 const isAdmin = ref(false)
+const includeDeleted = ref(false)
 const bases = ref<KnowledgeBaseItem[]>([])
 const docs = ref<KnowledgeDocItem[]>([])
 const selectedBaseId = ref<number | null>(null)
@@ -88,7 +91,7 @@ const loadBases = async () => {
 const loadDocs = async (baseId: number) => {
   loadingDocs.value = true
   try {
-    const res = await api.get(`/knowledge/docs?knowledge_base_id=${baseId}`)
+    const res = await api.get(`/knowledge/docs?knowledge_base_id=${baseId}&include_deleted=${includeDeleted.value}`)
     docs.value = res.data
   } catch (e: any) {
     ElMessage.error(e.response?.data?.detail || e.message || '文档列表加载失败')
@@ -172,6 +175,40 @@ const applyRouteSelection = async () => {
 const docRowClassName = ({ row }: { row: KnowledgeDocItem }) =>
   highlightedDocId.value && row.id === highlightedDocId.value ? 'knowledge-doc-row--highlight' : ''
 
+const parseFilenameFromDisposition = (value?: string): string | null => {
+  if (!value) return null
+  const match = /filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i.exec(value)
+  const encoded = match?.[1]
+  const plain = match?.[2]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      return encoded
+    }
+  }
+  return plain || null
+}
+
+const downloadDoc = async (row: KnowledgeDocItem) => {
+  try {
+    const res = await api.get(`/knowledge/docs/${row.id}/download`, { responseType: 'blob' })
+    const disposition = String(res.headers['content-disposition'] || '')
+    const filename = parseFilenameFromDisposition(disposition) || row.filename || `document-${row.id}`
+    const blob = new Blob([res.data], { type: row.content_type || 'application/octet-stream' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    window.URL.revokeObjectURL(url)
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || '下载失败')
+  }
+}
+
 const customUpload = async (options: UploadRequestOptions) => {
   if (!selectedBaseId.value) {
     ElMessage.warning('请先选择一个知识库')
@@ -207,6 +244,54 @@ const formatStatus = (status: string) => {
   return status
 }
 
+const formatFileSize = (size?: number) => {
+  const value = Number(size || 0)
+  if (!Number.isFinite(value) || value <= 0) return '-'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+const formatDateTime = (value?: string) => {
+  if (!value) return '-'
+  const dt = new Date(value)
+  if (Number.isNaN(dt.getTime())) return value
+  return dt.toLocaleString('zh-CN', { hour12: false })
+}
+
+const deleteDoc = async (row: KnowledgeDocItem) => {
+  try {
+    await ElMessageBox.confirm(`确认删除文档「${row.filename}」？`, '删除文档', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await api.delete(`/knowledge/docs/${row.id}`)
+    ElMessage.success('文档已删除')
+    if (selectedBaseId.value) {
+      await loadDocs(selectedBaseId.value)
+      await loadBases()
+    }
+  } catch (e: any) {
+    if (e === 'cancel' || e === 'close' || e?.message === 'cancel') return
+    ElMessage.error(e.response?.data?.detail || e.message || '删除失败')
+  }
+}
+
+const restoreDoc = async (row: KnowledgeDocItem) => {
+  try {
+    await api.post(`/knowledge/docs/${row.id}/restore`)
+    ElMessage.success('文档已恢复')
+    if (selectedBaseId.value) {
+      await loadDocs(selectedBaseId.value)
+      await loadBases()
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || '恢复失败')
+  }
+}
+
 onMounted(async () => {
   await loadCurrentUser()
   await loadBases()
@@ -222,6 +307,12 @@ watch(
     void applyRouteSelection()
   },
 )
+
+watch(includeDeleted, async () => {
+  if (selectedBaseId.value) {
+    await loadDocs(selectedBaseId.value)
+  }
+})
 
 onBeforeUnmount(() => {
   stopPolling()
@@ -295,9 +386,16 @@ onBeforeUnmount(() => {
       <template #header>
         <div class="card-header-row">
           <span>文档管理</span>
-          <el-select v-model="selectedBaseId" size="small" style="width: 220px" @change="onBaseChange">
-            <el-option v-for="base in bases" :key="base.id" :label="base.name" :value="base.id" />
-          </el-select>
+          <div class="row">
+            <el-switch
+              v-model="includeDeleted"
+              active-text="显示已删除"
+              :disabled="!selectedBaseCanManage"
+            />
+            <el-select v-model="selectedBaseId" size="small" style="width: 220px" @change="onBaseChange">
+              <el-option v-for="base in bases" :key="base.id" :label="base.name" :value="base.id" />
+            </el-select>
+          </div>
         </div>
       </template>
 
@@ -319,11 +417,29 @@ onBeforeUnmount(() => {
         v-loading="loadingDocs"
         size="small"
       >
-        <el-table-column prop="filename" label="文档" min-width="180" />
+        <el-table-column label="文档" min-width="180">
+          <template #default="{ row }">
+            <button
+              type="button"
+              class="doc-download-link"
+              :disabled="!!row.deleted_at"
+              @click="downloadDoc(row)"
+            >
+              {{ row.filename }}
+            </button>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            {{ formatStatus(row.status) }}
+            <el-tag v-if="row.deleted_at" type="info" size="small">已删除</el-tag>
+            <span v-else>{{ formatStatus(row.status) }}</span>
           </template>
+        </el-table-column>
+        <el-table-column label="大小" width="110">
+          <template #default="{ row }">{{ formatFileSize(row.file_size) }}</template>
+        </el-table-column>
+        <el-table-column label="上传时间" min-width="170">
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="进度" min-width="170">
           <template #default="{ row }">
@@ -335,6 +451,18 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column label="总切片" width="90">
           <template #default="{ row }">{{ row.chunk_count }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              :type="row.deleted_at ? 'primary' : 'danger'"
+              text
+              :disabled="!selectedBaseCanManage"
+              @click="row.deleted_at ? restoreDoc(row) : deleteDoc(row)"
+            >
+              {{ row.deleted_at ? '恢复' : '删除' }}
+            </el-button>
+          </template>
         </el-table-column>
       </el-table>
     </el-card>

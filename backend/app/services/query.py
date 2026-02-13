@@ -29,6 +29,7 @@ def retrieve_top_chunks(db: Session, user_id: int, question: str, top_k: int = 1
             .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
             .filter(
                 KnowledgeBase.is_enabled.is_(True),
+                KnowledgeDocument.deleted_at.is_(None),
                 or_(
                     KnowledgeBase.scope == 'public',
                     and_(KnowledgeBase.scope == 'private', KnowledgeBase.owner_id == user_id),
@@ -46,6 +47,7 @@ def retrieve_top_chunks(db: Session, user_id: int, question: str, top_k: int = 1
         .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
         .filter(
             KnowledgeBase.is_enabled.is_(True),
+            KnowledgeDocument.deleted_at.is_(None),
             or_(
                 KnowledgeBase.scope == 'public',
                 and_(KnowledgeBase.scope == 'private', KnowledgeBase.owner_id == user_id),

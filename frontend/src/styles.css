@@ -749,6 +749,27 @@ body {
   font-size: 12px;
 }
 
+.doc-download-link {
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  padding: 0;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.doc-download-link:hover {
+  color: #1d4ed8;
+}
+
+.doc-download-link:disabled {
+  color: #9aa3b2;
+  text-decoration: none;
+  cursor: not-allowed;
+}
+
 @media (max-width: 768px) {
   .chat-layout {
     height: 100%;

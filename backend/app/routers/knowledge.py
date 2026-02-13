@@ -1,7 +1,10 @@
 from datetime import datetime
+from io import BytesIO
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
@@ -91,7 +94,7 @@ def _process_document_ingestion(document_id: int, content: bytes, content_type: 
     db = SessionLocal()
     try:
         doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
-        if doc is None:
+        if doc is None or doc.deleted_at is not None:
             return
 
         _update_document_progress(db, doc, status='slicing', progress=10, error_message=None)
@@ -106,6 +109,9 @@ def _process_document_ingestion(document_id: int, content: bytes, content_type: 
         inserted = 0
         for idx, chunk in enumerate(chunks):
             embedding = llm_client.embed_text(chunk)
+            doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+            if doc is None or doc.deleted_at is not None:
+                return
             db.add(
                 KnowledgeChunk(
                     document_id=doc.id,
@@ -185,14 +191,14 @@ def list_bases(db: Session = Depends(get_db), current_user: User = Depends(get_c
     for base in bases:
         doc_count = (
             db.query(func.count(KnowledgeDocument.id))
-            .filter(KnowledgeDocument.knowledge_base_id == base.id)
+            .filter(KnowledgeDocument.knowledge_base_id == base.id, KnowledgeDocument.deleted_at.is_(None))
             .scalar()
             or 0
         )
         chunk_count = (
             db.query(func.count(KnowledgeChunk.id))
             .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeChunk.document_id)
-            .filter(KnowledgeDocument.knowledge_base_id == base.id)
+            .filter(KnowledgeDocument.knowledge_base_id == base.id, KnowledgeDocument.deleted_at.is_(None))
             .scalar()
             or 0
         )
@@ -274,6 +280,8 @@ def upload_knowledge(
         knowledge_base_id=base.id,
         filename=file.filename,
         content_type=file.content_type,
+        raw_content=content,
+        file_size=len(content),
         status='queued',
         progress=0,
         total_chunks=0,
@@ -298,6 +306,7 @@ def upload_knowledge(
 @router.get('/docs')
 def list_docs(
     knowledge_base_id: Optional[int] = Query(default=None),
+    include_deleted: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict]:
@@ -317,7 +326,13 @@ def list_docs(
             return []
         if not _is_base_visible(current_user, base):
             return []
+        if include_deleted and not _can_manage_base(current_user, base):
+            include_deleted = False
         query = query.filter(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
+    if include_deleted:
+        query = query.filter(KnowledgeDocument.deleted_at.is_not(None))
+    else:
+        query = query.filter(KnowledgeDocument.deleted_at.is_(None))
     docs = query.order_by(KnowledgeDocument.created_at.desc()).all()
     return [
         {
@@ -326,6 +341,8 @@ def list_docs(
             'filename': d.filename,
             'content_type': d.content_type,
             'status': d.status,
+            'file_size': int(d.file_size or 0),
+            'deleted_at': d.deleted_at.isoformat() if d.deleted_at else None,
             'progress': d.progress,
             'total_chunks': d.total_chunks,
             'processed_chunks': d.processed_chunks,
@@ -335,3 +352,87 @@ def list_docs(
         }
         for d in docs
     ]
+
+
+@router.get('/docs/{document_id}/download')
+def download_doc(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    doc = (
+        db.query(KnowledgeDocument)
+        .join(KnowledgeBase, KnowledgeBase.id == KnowledgeDocument.knowledge_base_id)
+        .filter(KnowledgeDocument.id == document_id)
+        .first()
+    )
+    if doc is None:
+        raise HTTPException(status_code=404, detail='Document not found')
+
+    base = db.query(KnowledgeBase).filter(KnowledgeBase.id == doc.knowledge_base_id).first()
+    if base is None or not _is_base_visible(current_user, base):
+        raise HTTPException(status_code=404, detail='Document not found')
+    if doc.deleted_at is not None:
+        raise HTTPException(status_code=404, detail='Document not found')
+    if doc.raw_content is None:
+        raise HTTPException(status_code=404, detail='Original file is not available')
+
+    filename = doc.filename or f'document-{doc.id}'
+    # HTTP header values must be latin-1 encodable. Use RFC 5987 for unicode names.
+    ascii_name = filename.encode('ascii', errors='ignore').decode('ascii') or f'document-{doc.id}'
+    encoded_name = quote(filename, safe='')
+    return StreamingResponse(
+        BytesIO(doc.raw_content),
+        media_type=doc.content_type or 'application/octet-stream',
+        headers={
+            'Content-Disposition': (
+                f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}'
+            )
+        },
+    )
+
+
+@router.delete('/docs/{document_id}')
+def delete_doc(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+    if doc is None:
+        raise HTTPException(status_code=404, detail='Document not found')
+
+    base = db.query(KnowledgeBase).filter(KnowledgeBase.id == doc.knowledge_base_id).first()
+    if base is None:
+        raise HTTPException(status_code=404, detail='Knowledge base not found')
+    if not _can_manage_base(current_user, base):
+        raise HTTPException(status_code=403, detail='No permission to delete this document')
+
+    if doc.deleted_at is not None:
+        return {'deleted': True}
+    doc.deleted_at = datetime.utcnow()
+    db.add(doc)
+    db.commit()
+    return {'deleted': True}
+
+
+@router.post('/docs/{document_id}/restore')
+def restore_doc(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+    if doc is None:
+        raise HTTPException(status_code=404, detail='Document not found')
+    base = db.query(KnowledgeBase).filter(KnowledgeBase.id == doc.knowledge_base_id).first()
+    if base is None:
+        raise HTTPException(status_code=404, detail='Knowledge base not found')
+    if not _can_manage_base(current_user, base):
+        raise HTTPException(status_code=403, detail='No permission to restore this document')
+    if doc.deleted_at is None:
+        return {'restored': True}
+    doc.deleted_at = None
+    db.add(doc)
+    db.commit()
+    return {'restored': True}
