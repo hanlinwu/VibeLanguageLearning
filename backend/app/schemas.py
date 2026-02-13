@@ -7,6 +7,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     display_name: str = Field(min_length=1, max_length=120)
+    target_language: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class LoginRequest(BaseModel):
@@ -23,13 +24,22 @@ class UserResponse(BaseModel):
     id: int
     email: EmailStr
     display_name: str
+    target_language: Optional[str] = None
+    avatar_url: Optional[str] = None
     is_admin: bool = False
+
+
+class UserUpdateRequest(BaseModel):
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    target_language: Optional[str] = Field(default=None, max_length=64)
 
 
 class QueryRequest(BaseModel):
     question: str = Field(min_length=2)
     conversation_id: Optional[int] = None
     use_memory_stream: bool = True
+    use_web_search: bool = False
+    chat_model_id: Optional[int] = None
 
 
 class QueryResponse(BaseModel):

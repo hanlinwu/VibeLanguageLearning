@@ -74,10 +74,23 @@ def patch_llm_client(monkeypatch: pytest.MonkeyPatch):
                 break
         return f'TEST_ANSWER: {last_user[:120]}'
 
+    def fake_chat_messages_with_provider(
+        messages: list[dict[str, str]], base_url: str, api_key: str, model: str
+    ) -> str:
+        return fake_chat_messages(messages)
+
     def fake_stream_chat_messages(messages: list[dict[str, str]]):
         yield 'TEST_'
         yield 'STREAM_'
         yield 'ANSWER'
+
+    def fake_stream_chat_messages_with_provider(
+        messages: list[dict[str, str]], base_url: str, api_key: str, model: str
+    ):
+        yield from fake_stream_chat_messages(messages)
+
+    def fake_embed_text_with_provider(text: str, base_url: str, api_key: str, model: str) -> list[float]:
+        return fake_embed_text(text)
 
     def fake_rerank_texts(query: str, documents: list[str], top_k: int):
         results: list[dict] = []
@@ -92,9 +105,16 @@ def patch_llm_client(monkeypatch: pytest.MonkeyPatch):
             results.append({'index': idx, 'score': score})
         return results[:top_k]
 
+    def fake_search_web(db, query: str, max_results: int = 4):
+        return []
+
     monkeypatch.setattr(llm_client, 'embed_text', fake_embed_text)
     monkeypatch.setattr(llm_client, 'chat', fake_chat)
     monkeypatch.setattr(llm_client, 'stream_chat', fake_stream_chat)
     monkeypatch.setattr(llm_client, 'chat_messages', fake_chat_messages)
+    monkeypatch.setattr(llm_client, 'chat_messages_with_provider', fake_chat_messages_with_provider)
     monkeypatch.setattr(llm_client, 'stream_chat_messages', fake_stream_chat_messages)
+    monkeypatch.setattr(llm_client, 'stream_chat_messages_with_provider', fake_stream_chat_messages_with_provider)
+    monkeypatch.setattr(llm_client, 'embed_text_with_provider', fake_embed_text_with_provider)
     monkeypatch.setattr(llm_client, 'rerank_texts', fake_rerank_texts)
+    monkeypatch.setattr('app.services.query.search_web', fake_search_web)

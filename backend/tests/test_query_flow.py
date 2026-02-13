@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+from types import SimpleNamespace
 
 os.environ['DATABASE_URL'] = 'sqlite:///./test.db'
 
@@ -8,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.llm_client import llm_client
 from app.main import app
-from app.models import ChatConversation, User
+from app.models import ChatConversation, ModelConfig, ModelProvider, User
 from app.db import SessionLocal
 from app.services.query import stream_answer_question
 
@@ -152,6 +153,216 @@ def test_query_can_retrieve_from_public_knowledge_base() -> None:
         assert response.status_code == 200
         body = response.json()
         assert any(item.get('document_filename') == 'public-etre.md' for item in body['citations'])
+
+
+def test_query_can_use_selected_chat_model(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_chat_messages_with_provider(messages, base_url: str, api_key: str, model: str) -> str:
+        captured['model'] = model
+        return 'SELECTED_MODEL_ANSWER'
+
+    monkeypatch.setattr(llm_client, 'chat_messages_with_provider', fake_chat_messages_with_provider)
+
+    with TestClient(app) as client:
+        token = _register_login_and_seed(client)
+        headers = {'Authorization': f'Bearer {token}'}
+        me = client.get('/auth/me', headers=headers)
+        user_id = me.json()['id']
+
+        db = SessionLocal()
+        try:
+            provider = ModelProvider(name='P1', base_url='https://example.com/v1', api_key='sk', is_enabled=True)
+            db.add(provider)
+            db.flush()
+            model = ModelConfig(
+                provider_id=provider.id,
+                model_name='chat-reasoning',
+                display_name='Chat Reasoning',
+                model_type='reasoning',
+                description='',
+                tags='推理模型',
+                is_enabled=True,
+            )
+            db.add(model)
+            db.commit()
+            model_id = model.id
+        finally:
+            db.close()
+
+        response = client.post(
+            '/query',
+            json={'question': 'Test selected model', 'chat_model_id': model_id},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.json()['answer'] == 'SELECTED_MODEL_ANSWER'
+        assert captured.get('model') == 'chat-reasoning'
+
+
+def test_query_can_include_web_search_citations(monkeypatch) -> None:
+    from app.services import query as query_service
+
+    monkeypatch.setattr(
+        query_service,
+        'resolve_web_search_settings',
+        lambda db: SimpleNamespace(enabled=True, provider='duckduckgo', serper_endpoint='', serper_api_key=''),
+    )
+    monkeypatch.setattr(query_service, '_llm_web_search_decision', lambda question: True)
+    monkeypatch.setattr(
+        query_service,
+        'search_web',
+        lambda db, q, max_results=4: [
+            {
+                'title': 'French present tense guide',
+                'url': 'https://example.com/french-present',
+                'snippet': 'Present tense usage summary for etre and avoir.',
+                'source': 'example.com',
+            }
+        ],
+    )
+
+    with TestClient(app) as client:
+        token = _register_login_and_seed(client)
+        headers = {'Authorization': f'Bearer {token}'}
+
+        response = client.post(
+            '/query',
+            json={'question': 'Comment conjuguer etre?', 'use_web_search': True},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        web_refs = [item for item in body['citations'] if item.get('source') == 'web']
+        assert len(web_refs) == 1
+        assert web_refs[0]['url'] == 'https://example.com/french-present'
+
+
+def test_query_web_search_no_result_shows_hint(monkeypatch) -> None:
+    from app.services import query as query_service
+
+    monkeypatch.setattr(
+        query_service,
+        'resolve_web_search_settings',
+        lambda db: SimpleNamespace(enabled=True, provider='duckduckgo', serper_endpoint='', serper_api_key=''),
+    )
+    monkeypatch.setattr(query_service, '_llm_web_search_decision', lambda question: True)
+    monkeypatch.setattr(query_service, 'search_web', lambda db, q, max_results=4: [])
+
+    with TestClient(app) as client:
+        token = _register_login_and_seed(client)
+        headers = {'Authorization': f'Bearer {token}'}
+        response = client.post(
+            '/query',
+            json={'question': 'Test web no result', 'use_web_search': True},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        web_refs = [item for item in body['citations'] if item.get('source') == 'web']
+        assert len(web_refs) == 1
+        assert web_refs[0]['document_filename'] == '联网搜索未命中'
+
+
+def test_query_web_search_uses_decider_and_avoids_blind_search(monkeypatch) -> None:
+    from app.services import query as query_service
+
+    calls = {'count': 0}
+
+    monkeypatch.setattr(
+        query_service,
+        'resolve_web_search_settings',
+        lambda db: SimpleNamespace(enabled=True, provider='duckduckgo', serper_endpoint='', serper_api_key=''),
+    )
+    monkeypatch.setattr(query_service, '_llm_web_search_decision', lambda question: False)
+    monkeypatch.setattr(
+        query_service,
+        'search_web',
+        lambda db, q, max_results=4: calls.__setitem__('count', calls['count'] + 1) or [],
+    )
+
+    with TestClient(app) as client:
+        token = _register_login_and_seed(client)
+        headers = {'Authorization': f'Bearer {token}'}
+        response = client.post(
+            '/query',
+            json={'question': '请解释法语 être 的现在时变位', 'use_web_search': True},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert calls['count'] == 0
+
+
+def test_query_web_search_explicit_intent_forces_search(monkeypatch) -> None:
+    from app.services import query as query_service
+
+    monkeypatch.setattr(
+        query_service,
+        'resolve_web_search_settings',
+        lambda db: SimpleNamespace(enabled=True, provider='duckduckgo', serper_endpoint='', serper_api_key=''),
+    )
+    monkeypatch.setattr(
+        query_service,
+        'search_web',
+        lambda db, q, max_results=4: [
+            {
+                'title': 'explicit web result',
+                'url': 'https://example.com/explicit',
+                'snippet': 'explicit search',
+                'source': 'example.com',
+            }
+        ],
+    )
+
+    with TestClient(app) as client:
+        token = _register_login_and_seed(client)
+        headers = {'Authorization': f'Bearer {token}'}
+        response = client.post(
+            '/query',
+            json={'question': '请联网搜索今天法语学习新闻', 'use_web_search': False},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        web_refs = [item for item in body['citations'] if item.get('source') == 'web']
+        assert len(web_refs) == 1
+        assert web_refs[0]['url'] == 'https://example.com/explicit'
+
+
+def test_query_web_search_explicit_intent_ignores_system_toggle(monkeypatch) -> None:
+    from app.services import query as query_service
+
+    monkeypatch.setattr(
+        query_service,
+        'resolve_web_search_settings',
+        lambda db: SimpleNamespace(enabled=False, provider='duckduckgo', serper_endpoint='', serper_api_key=''),
+    )
+    monkeypatch.setattr(
+        query_service,
+        'search_web',
+        lambda db, q, max_results=4: [
+            {
+                'title': 'forced web result',
+                'url': 'https://example.com/forced',
+                'snippet': 'forced by explicit intent',
+                'source': 'example.com',
+            }
+        ],
+    )
+
+    with TestClient(app) as client:
+        token = _register_login_and_seed(client)
+        headers = {'Authorization': f'Bearer {token}'}
+        response = client.post(
+            '/query',
+            json={'question': '请网上搜索一下今天法语新闻', 'use_web_search': False},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        web_refs = [item for item in body['citations'] if item.get('source') == 'web']
+        assert len(web_refs) == 1
+        assert web_refs[0]['url'] == 'https://example.com/forced'
 
 
 def test_query_stream_returns_sse_chunks_and_done_event() -> None:
@@ -669,3 +880,42 @@ def test_enable_memory_stream_mid_conversation_takes_effect(monkeypatch) -> None
         assert len(captured_system_prompts) >= 3
         assert '长期记忆（跨对话）' in captured_system_prompts[-1]
         assert '优先复习动词变位' in captured_system_prompts[-1]
+
+
+def test_query_injects_active_study_plan_into_system_prompt(monkeypatch) -> None:
+    captured_system_prompts: list[str] = []
+
+    def fake_chat_messages(messages: list[dict[str, str]]) -> str:
+        system_text = '\n'.join(msg.get('content', '') for msg in messages if msg.get('role') == 'system')
+        captured_system_prompts.append(system_text)
+        return '常规回答'
+
+    monkeypatch.setattr(llm_client, 'chat_messages', fake_chat_messages)
+
+    with TestClient(app) as client:
+        token = _register_login_and_seed(client)
+        headers = {'Authorization': f'Bearer {token}'}
+
+        created = client.post(
+            '/plans',
+            json={
+                'language_code': 'fr',
+                'current_level': '零基础',
+                'self_assessment': '基本不会',
+                'target_level': '日常交流',
+                'target_duration_weeks': 12,
+            },
+            headers=headers,
+        )
+        assert created.status_code == 201
+        plan_id = created.json()['plan']['id']
+
+        gen_level = client.post(f'/plans/{plan_id}/generate-next-level', headers=headers)
+        assert gen_level.status_code == 200
+
+        response = client.post('/query', json={'question': '给我今天的学习建议'}, headers=headers)
+        assert response.status_code == 200
+
+        assert captured_system_prompts
+        assert '当前激活学习计划' in captured_system_prompts[-1]
+        assert '学习计划' in captured_system_prompts[-1]

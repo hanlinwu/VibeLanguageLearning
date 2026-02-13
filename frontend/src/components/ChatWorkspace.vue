@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { CloseBold, Top } from '@element-plus/icons-vue'
+import { CaretBottom, CloseBold, Top } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
 
 import api, { API_BASE_URL } from '../api/client'
@@ -19,6 +19,9 @@ type CitationItem = {
   document_filename?: string
   knowledge_base_id?: number
   knowledge_base_name?: string
+  source?: string
+  source_name?: string
+  url?: string
 }
 
 type InteractionItem = {
@@ -28,12 +31,53 @@ type InteractionItem = {
   answer: string
   trace_id: string
   citations?: CitationItem[]
+  pending_status?: string
+  web_count?: number
   created_at: string
+}
+
+type ChatModelOption = {
+  id: number
+  provider_id: number
+  provider_name: string
+  model_name: string
+  display_name: string
+  model_type: 'language' | 'vision_language' | 'reasoning'
+  description?: string
+  tags: string[]
+}
+
+type HomeDashboard = {
+  streak_days: number
+  week_activity_days: number
+  week_interactions: number
+  week_quizzes: number
+  active_language?: {
+    language_code: string
+    language_label: string
+  } | null
+  current_level?: {
+    id: number
+    title: string
+    level_index: number
+    completion_rate: number
+  } | null
+  plan_progress: {
+    total_classes: number
+    completed_classes: number
+    completion_rate: number
+    completed_recent: number
+  }
+  milestones: {
+    total_conversations: number
+    total_interactions: number
+  }
 }
 
 const sending = ref(false)
 const question = ref('')
 const useMemoryStream = ref(true)
+const useWebSearch = ref(false)
 const history = ref<InteractionItem[]>([])
 const streamController = ref<AbortController | null>(null)
 const abortRequested = ref(false)
@@ -42,8 +86,23 @@ const chatStore = useChatStore()
 const router = useRouter()
 const { activeConversationId } = storeToRefs(chatStore)
 const loadingMessages = ref(false)
+const loadingModels = ref(false)
 const dialogViewportRef = ref<HTMLElement | null>(null)
 const isEmptyState = computed(() => history.value.length === 0)
+const citationDrawerVisible = ref(false)
+const citationDrawerItems = ref<CitationItem[]>([])
+const robotEyeX = ref(0)
+const robotEyeY = ref(0)
+const robotBlink = ref(false)
+const robotClickPulse = ref(false)
+const chatModelOptions = ref<ChatModelOption[]>([])
+const selectedChatModelId = ref<number | null>(null)
+const modelPickerVisible = ref(false)
+const selectedChatModel = computed(() =>
+  chatModelOptions.value.find((item) => item.id === selectedChatModelId.value) || null,
+)
+const homeDashboard = ref<HomeDashboard | null>(null)
+const loadingHomeDashboard = ref(false)
 
 const setDialogViewportRef = (el: Element | null) => {
   dialogViewportRef.value = el as HTMLElement | null
@@ -74,14 +133,104 @@ const loadMessagesByConversationId = async (conversationId: number) => {
 }
 
 const MEMORY_SWITCH_STORAGE_KEY = 'chat.useMemoryStream'
+const WEB_SEARCH_STORAGE_KEY = 'chat.useWebSearch'
+const CHAT_MODEL_STORAGE_KEY = 'chat.selectedModelId'
 const savedMemorySwitch = window.localStorage.getItem(MEMORY_SWITCH_STORAGE_KEY)
 if (savedMemorySwitch === '0') {
   useMemoryStream.value = false
+}
+const savedWebSearch = window.localStorage.getItem(WEB_SEARCH_STORAGE_KEY)
+if (savedWebSearch === '1') {
+  useWebSearch.value = true
+}
+const savedModelId = window.localStorage.getItem(CHAT_MODEL_STORAGE_KEY)
+if (savedModelId) {
+  const parsed = Number.parseInt(savedModelId, 10)
+  if (Number.isFinite(parsed) && parsed > 0) {
+    selectedChatModelId.value = parsed
+  }
 }
 
 watch(useMemoryStream, (enabled) => {
   window.localStorage.setItem(MEMORY_SWITCH_STORAGE_KEY, enabled ? '1' : '0')
 })
+watch(useWebSearch, (enabled) => {
+  window.localStorage.setItem(WEB_SEARCH_STORAGE_KEY, enabled ? '1' : '0')
+})
+
+watch(selectedChatModelId, (value) => {
+  if (!value) {
+    window.localStorage.removeItem(CHAT_MODEL_STORAGE_KEY)
+    return
+  }
+  window.localStorage.setItem(CHAT_MODEL_STORAGE_KEY, String(value))
+})
+
+const modelTypeText = (value?: string) => {
+  if (value === 'language') return '语言模型'
+  if (value === 'vision_language') return '视觉语言模型'
+  if (value === 'reasoning') return '推理模型'
+  return '模型'
+}
+
+const loadChatModels = async () => {
+  loadingModels.value = true
+  try {
+    const res = await api.get('/model-settings/chat-models')
+    chatModelOptions.value = Array.isArray(res.data) ? res.data : []
+    if (
+      selectedChatModelId.value &&
+      !chatModelOptions.value.some((item) => item.id === selectedChatModelId.value)
+    ) {
+      selectedChatModelId.value = null
+    }
+    if (!selectedChatModelId.value && chatModelOptions.value.length > 0) {
+      selectedChatModelId.value = chatModelOptions.value[0].id
+    }
+  } catch (e: any) {
+    chatModelOptions.value = []
+    selectedChatModelId.value = null
+    ElMessage.error(e.response?.data?.detail || e.message || '模型列表加载失败')
+  } finally {
+    loadingModels.value = false
+  }
+}
+
+const loadHomeDashboard = async () => {
+  try {
+    loadingHomeDashboard.value = true
+    const res = await api.get('/interactions/home-dashboard')
+    homeDashboard.value = res.data || null
+  } catch {
+    homeDashboard.value = null
+  } finally {
+    loadingHomeDashboard.value = false
+  }
+}
+
+const selectChatModel = (modelId: number) => {
+  selectedChatModelId.value = modelId
+  modelPickerVisible.value = false
+}
+
+const randomizeRobotEyes = () => {
+  robotEyeX.value = Math.round((Math.random() * 2 - 1) * 2)
+  robotEyeY.value = Math.round((Math.random() * 2 - 1) * 2)
+  if (Math.random() < 0.18) {
+    robotBlink.value = true
+    window.setTimeout(() => {
+      robotBlink.value = false
+    }, 140)
+  }
+}
+
+const onRobotClick = () => {
+  robotClickPulse.value = true
+  randomizeRobotEyes()
+  window.setTimeout(() => {
+    robotClickPulse.value = false
+  }, 260)
+}
 
 const send = async () => {
   const content = question.value.trim()
@@ -108,6 +257,8 @@ const send = async () => {
       answer: '',
       trace_id: '',
       citations: [],
+      pending_status: useWebSearch.value ? '正在联网搜索...' : '正在思考回答...',
+      web_count: 0,
       created_at: new Date().toISOString(),
     })
     question.value = ''
@@ -123,6 +274,8 @@ const send = async () => {
         question: content,
         conversation_id: activeConversationId.value || undefined,
         use_memory_stream: useMemoryStream.value,
+        use_web_search: useWebSearch.value,
+        chat_model_id: selectedChatModelId.value || undefined,
       }),
     })
     if (!response.ok || !response.body) {
@@ -170,9 +323,18 @@ const send = async () => {
           }
         } else if (payload.type === 'chunk') {
           streamHasOutput = true
+          target.pending_status = ''
           target.answer += payload.content || ''
+          randomizeRobotEyes()
+        } else if (payload.type === 'status') {
+          target.pending_status = payload.status || target.pending_status || ''
+          if (typeof payload.web_count === 'number') {
+            target.web_count = payload.web_count
+          }
+          randomizeRobotEyes()
         } else if (payload.type === 'done') {
           streamCompleted = true
+          target.pending_status = ''
           target.trace_id = payload.trace_id || target.trace_id
           if (Array.isArray(payload.citations)) {
             target.citations = payload.citations
@@ -211,6 +373,7 @@ const send = async () => {
       chatStore.setActiveConversation(resolvedConversationId)
     }
     void chatStore.loadConversations()
+    void loadHomeDashboard()
   }
 }
 
@@ -239,6 +402,10 @@ const onKeydown = (event: KeyboardEvent) => {
 }
 
 const openCitation = async (item: CitationItem) => {
+  if (item.url) {
+    window.open(item.url, '_blank', 'noopener,noreferrer')
+    return
+  }
   if (!item.document_id) return
   await router.push({
     path: '/knowledge',
@@ -249,6 +416,32 @@ const openCitation = async (item: CitationItem) => {
     },
   })
 }
+
+const citationStats = (citations?: CitationItem[]) => {
+  const list = citations || []
+  const web = list.filter((item) => item.source === 'web').length
+  return { web, kb: list.length - web }
+}
+
+const citationSummaryText = (citations?: CitationItem[]) => {
+  const stats = citationStats(citations)
+  const parts: string[] = []
+  if (stats.web > 0) {
+    parts.push(`网页 ${stats.web} 个`)
+  }
+  if (stats.kb > 0) {
+    parts.push(`知识库 ${stats.kb} 条`)
+  }
+  return `参考资料：${parts.join('，')}`
+}
+
+const openCitationDrawer = (item: InteractionItem) => {
+  citationDrawerItems.value = item.citations || []
+  citationDrawerVisible.value = true
+}
+
+const drawerWebCitations = computed(() => citationDrawerItems.value.filter((item) => item.source === 'web'))
+const drawerKbCitations = computed(() => citationDrawerItems.value.filter((item) => item.source !== 'web'))
 
 const activeConversationIdRef = computed(() => activeConversationId.value)
 
@@ -274,13 +467,61 @@ watch(loadingMessages, async (loading) => {
     await scrollToBottom()
   }
 })
+
+onMounted(() => {
+  void loadChatModels()
+  void loadHomeDashboard()
+})
 </script>
 
 <template>
-  <div class="chat-layout">
+  <div class="chat-layout" :class="{ 'has-citation-drawer': citationDrawerVisible }">
     <div class="chat-col chat-content">
       <el-card shadow="never" class="chat-card chat-card--fill chat-content-card">
         <div class="chat-main-panel" :class="{ 'chat-main-panel--empty': isEmptyState }">
+          <div class="chat-head">
+            <div class="chat-head-left">
+              <el-popover
+                v-model:visible="modelPickerVisible"
+                trigger="click"
+                placement="bottom-start"
+                :width="420"
+                popper-class="chat-model-popover"
+              >
+                <template #reference>
+                  <button type="button" class="chat-model-trigger">
+                    <span class="chat-model-trigger-title">{{ selectedChatModel?.display_name || '选择模型' }}</span>
+                    <el-icon class="chat-model-trigger-icon"><CaretBottom /></el-icon>
+                  </button>
+                </template>
+                <div class="chat-model-list" v-loading="loadingModels">
+                  <button
+                    v-for="item in chatModelOptions"
+                    :key="item.id"
+                    type="button"
+                    class="chat-model-item"
+                    :class="{ active: item.id === selectedChatModelId }"
+                    @click="selectChatModel(item.id)"
+                  >
+                    <div class="chat-model-option">
+                      <div class="chat-model-option-header">
+                        <span class="chat-model-option-name">{{ item.display_name }}</span>
+                        <el-tag size="small" type="info" effect="plain">{{ modelTypeText(item.model_type) }}</el-tag>
+                      </div>
+                      <div class="chat-model-option-meta">
+                        <span class="chat-model-option-provider">{{ item.provider_name }}</span>
+                        <span v-if="item.description" class="chat-model-option-desc">{{ item.description }}</span>
+                      </div>
+                      <div v-if="item.tags && item.tags.length > 0" class="chat-model-option-tags">
+                        <el-tag v-for="tag in item.tags" :key="`${item.id}-${tag}`" size="small" effect="plain">{{ tag }}</el-tag>
+                      </div>
+                    </div>
+                  </button>
+                </div>
+              </el-popover>
+            </div>
+            <div class="chat-head-right" />
+          </div>
           <div v-if="!isEmptyState" class="dialog-scroll" :ref="setDialogViewportRef">
             <div
               v-for="item in history"
@@ -289,17 +530,31 @@ watch(loadingMessages, async (loading) => {
             >
               <div class="message-row user">
                 <div class="bubble user">{{ item.question }}</div>
-                <el-avatar size="small" class="avatar user">我</el-avatar>
               </div>
               <div class="message-row assistant">
-                <el-avatar size="small" class="avatar assistant">AI</el-avatar>
+                <button
+                  type="button"
+                  class="robot-avatar-btn"
+                  :class="{
+                    'is-thinking': sending && item.id === history[history.length - 1]?.id,
+                    'is-blink': robotBlink,
+                    'is-click': robotClickPulse,
+                  }"
+                  :style="{ '--eye-x': `${robotEyeX}px`, '--eye-y': `${robotEyeY}px` }"
+                  @click="onRobotClick"
+                >
+                  <span class="robot-head">
+                    <span class="robot-antenna" />
+                    <span class="robot-face">
+                      <span class="robot-eye robot-eye--left" />
+                      <span class="robot-eye robot-eye--right" />
+                      <span class="robot-mouth" />
+                    </span>
+                  </span>
+                </button>
                 <div class="bubble assistant">
                   <template v-if="sending && !item.answer && item.id === history[history.length - 1]?.id">
-                    <span class="typing-dots">
-                      <i />
-                      <i />
-                      <i />
-                    </span>
+                    <span class="assistant-status-text">{{ item.pending_status || '正在思考回答...' }}</span>
                   </template>
                   <template v-else>
                     <div class="markdown-body" v-html="renderMarkdownToHtml(item.answer || '')" />
@@ -308,19 +563,9 @@ watch(loadingMessages, async (loading) => {
               </div>
               <div v-if="item.citations && item.citations.length > 0" class="message-row assistant">
                 <div class="avatar avatar--ghost" />
-                <div class="bubble-citations">
-                  <div class="bubble-citations-title">参考资料</div>
-                  <button
-                    v-for="citation in item.citations"
-                    :key="`${item.id}-citation-${citation.chunk_id}`"
-                    class="bubble-citation-link"
-                    type="button"
-                    @click="openCitation(citation)"
-                  >
-                    <span class="bubble-citation-name">{{ citation.document_filename || `文档 #${citation.document_id || '-'}` }}</span>
-                    <span class="bubble-citation-preview">{{ citation.preview }}</span>
-                  </button>
-                </div>
+                <button class="bubble-citation-summary" type="button" @click="openCitationDrawer(item)">
+                  {{ citationSummaryText(item.citations) }}
+                </button>
               </div>
             </div>
           </div>
@@ -351,6 +596,15 @@ watch(loadingMessages, async (loading) => {
                 >
                   记忆流
                 </el-button>
+                <el-button
+                  size="small"
+                  class="memory-toggle-btn"
+                  :type="useWebSearch ? 'primary' : 'default'"
+                  plain
+                  @click="useWebSearch = !useWebSearch"
+                >
+                  联网搜索
+                </el-button>
               </div>
               <el-button
                 class="send-icon-btn"
@@ -361,8 +615,79 @@ watch(loadingMessages, async (loading) => {
               />
             </div>
           </div>
+
+          <div v-if="isEmptyState" class="chat-home-dashboard" v-loading="loadingHomeDashboard">
+            <div class="chat-home-grid">
+              <div class="chat-home-card">
+                <div class="chat-home-card-label">连续学习</div>
+                <div class="chat-home-card-value">{{ homeDashboard?.streak_days ?? 0 }} 天</div>
+                <div class="chat-home-card-sub">本周活跃 {{ homeDashboard?.week_activity_days ?? 0 }} 天</div>
+              </div>
+              <div class="chat-home-card">
+                <div class="chat-home-card-label">当前关卡</div>
+                <div class="chat-home-card-value">Level {{ homeDashboard?.current_level?.level_index ?? '-' }}</div>
+                <div class="chat-home-card-sub">{{ homeDashboard?.current_level?.title || '尚未开始计划' }}</div>
+              </div>
+              <div class="chat-home-card">
+                <div class="chat-home-card-label">计划执行</div>
+                <div class="chat-home-card-value">
+                  {{ Math.round((homeDashboard?.plan_progress?.completion_rate || 0) * 100) }}%
+                </div>
+                <div class="chat-home-card-sub">
+                  已完成 {{ homeDashboard?.plan_progress?.completed_classes ?? 0 }}/{{ homeDashboard?.plan_progress?.total_classes ?? 0 }} 个 class
+                </div>
+              </div>
+              <div class="chat-home-card">
+                <div class="chat-home-card-label">本周学习</div>
+                <div class="chat-home-card-value">{{ homeDashboard?.week_interactions ?? 0 }} 次对话</div>
+                <div class="chat-home-card-sub">{{ homeDashboard?.week_quizzes ?? 0 }} 次测验 · 新完成 {{ homeDashboard?.plan_progress?.completed_recent ?? 0 }} 课</div>
+              </div>
+            </div>
+          </div>
         </div>
       </el-card>
     </div>
+
+    <el-drawer
+      v-model="citationDrawerVisible"
+      direction="rtl"
+      size="var(--citation-drawer-width)"
+      :modal="false"
+      :lock-scroll="false"
+      title="参考资料详情"
+      class="citation-drawer"
+    >
+      <div v-if="drawerWebCitations.length > 0" class="citation-drawer-section">
+        <div class="citation-drawer-title">网页引用（{{ drawerWebCitations.length }}）</div>
+        <button
+          v-for="citation in drawerWebCitations"
+          :key="`drawer-web-${citation.chunk_id}`"
+          type="button"
+          class="citation-drawer-item"
+          @click="openCitation(citation)"
+        >
+          <div class="citation-drawer-item-title">{{ citation.document_filename || '联网搜索结果' }}</div>
+          <div class="citation-drawer-item-meta">{{ citation.source_name || 'web' }}</div>
+          <div class="citation-drawer-item-link">{{ citation.url || '-' }}</div>
+          <div class="citation-drawer-item-preview">{{ citation.preview }}</div>
+        </button>
+      </div>
+
+      <div v-if="drawerKbCitations.length > 0" class="citation-drawer-section">
+        <div class="citation-drawer-title">知识库引用（{{ drawerKbCitations.length }}）</div>
+        <button
+          v-for="citation in drawerKbCitations"
+          :key="`drawer-kb-${citation.chunk_id}`"
+          type="button"
+          class="citation-drawer-item"
+          @click="openCitation(citation)"
+        >
+          <div class="citation-drawer-item-title">{{ citation.document_filename || `文档 #${citation.document_id || '-'}` }}</div>
+          <div class="citation-drawer-item-meta">切片 {{ citation.chunk_index ?? '-' }}</div>
+          <div class="citation-drawer-item-preview">{{ citation.preview }}</div>
+        </button>
+      </div>
+      <div v-if="drawerWebCitations.length === 0 && drawerKbCitations.length === 0" class="citation-drawer-empty">暂无参考资料</div>
+    </el-drawer>
   </div>
 </template>

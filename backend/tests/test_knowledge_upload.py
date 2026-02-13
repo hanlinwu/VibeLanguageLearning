@@ -55,6 +55,7 @@ def test_upload_markdown_and_manage_multiple_bases() -> None:
         assert item['status'] in {'queued', 'slicing', 'embedding', 'completed'}
         assert isinstance(item.get('file_size'), int)
         assert item.get('file_size', 0) > 0
+        assert item.get('embedding_model')
         assert item.get('created_at')
         assert 'chunk_count' in item
         assert 'processed_chunks' in item

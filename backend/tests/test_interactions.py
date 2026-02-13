@@ -39,3 +39,14 @@ def test_recent_interactions_returns_user_history() -> None:
         assert 'question' in items[0]
         assert 'answer' in items[0]
         assert 'trace_id' in items[0]
+
+
+def test_home_dashboard_returns_summary() -> None:
+    with TestClient(app) as client:
+        token = _register_login_seed_and_query(client)
+        res = client.get('/interactions/home-dashboard', headers={'Authorization': f'Bearer {token}'})
+        assert res.status_code == 200
+        body = res.json()
+        assert 'streak_days' in body
+        assert 'plan_progress' in body
+        assert 'milestones' in body

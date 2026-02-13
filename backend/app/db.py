@@ -46,6 +46,8 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
     with engine_obj.begin() as conn:
         if engine_obj.dialect.name == 'postgresql':
             conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE'))
+            conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS target_language VARCHAR(64)'))
+            conn.execute(text('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)'))
             conn.execute(
                 text(
                     'ALTER TABLE interaction_logs '
@@ -93,6 +95,7 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
             conn.execute(text("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS status VARCHAR(24)"))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS raw_content BYTEA'))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS file_size INTEGER'))
+            conn.execute(text("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(120)"))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP NULL'))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS progress INTEGER'))
             conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS total_chunks INTEGER'))
@@ -146,6 +149,18 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                     ),
                     {'base_id': int(base_id), 'owner_id': owner_id},
                 )
+            conn.execute(text('ALTER TABLE study_plan_units ADD COLUMN IF NOT EXISTS is_completed BOOLEAN DEFAULT FALSE'))
+            conn.execute(text('ALTER TABLE study_plan_units ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP NULL'))
+            conn.execute(
+                text(
+                    'ALTER TABLE study_plan_units '
+                    'ADD COLUMN IF NOT EXISTS assessment_pass_score DOUBLE PRECISION DEFAULT 0.7'
+                )
+            )
+            conn.execute(
+                text('ALTER TABLE study_plan_units ADD COLUMN IF NOT EXISTS last_assessment_score DOUBLE PRECISION NULL')
+            )
+            conn.execute(text('ALTER TABLE study_plans ADD COLUMN IF NOT EXISTS questionnaire_json JSONB'))
             return
 
         if engine_obj.dialect.name == 'sqlite':
@@ -153,6 +168,10 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
             user_column_names = {row[1] for row in user_columns}
             if 'is_admin' not in user_column_names:
                 conn.execute(text('ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0'))
+            if 'target_language' not in user_column_names:
+                conn.execute(text('ALTER TABLE users ADD COLUMN target_language TEXT'))
+            if 'avatar_url' not in user_column_names:
+                conn.execute(text('ALTER TABLE users ADD COLUMN avatar_url TEXT'))
 
             columns = conn.execute(text("PRAGMA table_info('interaction_logs')")).fetchall()
             column_names = {row[1] for row in columns}
@@ -200,6 +219,8 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                 conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN raw_content BLOB'))
             if 'file_size' not in doc_column_names:
                 conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN file_size INTEGER DEFAULT 0'))
+            if 'embedding_model' not in doc_column_names:
+                conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN embedding_model TEXT'))
             if 'deleted_at' not in doc_column_names:
                 conn.execute(text('ALTER TABLE knowledge_documents ADD COLUMN deleted_at TEXT'))
             if 'progress' not in doc_column_names:
@@ -268,6 +289,22 @@ def bootstrap_schema_compat(engine_obj: Engine) -> None:
                     ),
                     {'base_id': base_id, 'owner_id': owner_id},
                 )
+
+            spu_columns = conn.execute(text("PRAGMA table_info('study_plan_units')")).fetchall()
+            spu_column_names = {row[1] for row in spu_columns}
+            if 'is_completed' not in spu_column_names:
+                conn.execute(text('ALTER TABLE study_plan_units ADD COLUMN is_completed INTEGER DEFAULT 0'))
+            if 'completed_at' not in spu_column_names:
+                conn.execute(text('ALTER TABLE study_plan_units ADD COLUMN completed_at TEXT'))
+            if 'assessment_pass_score' not in spu_column_names:
+                conn.execute(text('ALTER TABLE study_plan_units ADD COLUMN assessment_pass_score REAL DEFAULT 0.7'))
+            if 'last_assessment_score' not in spu_column_names:
+                conn.execute(text('ALTER TABLE study_plan_units ADD COLUMN last_assessment_score REAL'))
+
+            sp_columns = conn.execute(text("PRAGMA table_info('study_plans')")).fetchall()
+            sp_column_names = {row[1] for row in sp_columns}
+            if 'questionnaire_json' not in sp_column_names:
+                conn.execute(text('ALTER TABLE study_plans ADD COLUMN questionnaire_json TEXT'))
 
 
 def get_db() -> Generator[Session, None, None]:

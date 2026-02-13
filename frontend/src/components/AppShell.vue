@@ -18,6 +18,7 @@ import { storeToRefs } from 'pinia'
 import api from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore, type ConversationItem } from '../stores/chat'
+import yanzhouLogo from '../assets/yanzhou-logo.svg'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,9 +27,16 @@ const chatStore = useChatStore()
 const { conversations, activeConversationId } = storeToRefs(chatStore)
 const userName = ref('当前用户')
 const userEmail = ref('')
+const userAvatarUrl = ref('')
+const isAdmin = ref(false)
+const profileDialogVisible = ref(false)
+const profileSaving = ref(false)
+const avatarRegenerating = ref(false)
+const profileDisplayName = ref('')
+const profileAvatarUrl = ref('')
 
 const navItems = [
-  { to: '/chat', label: 'AI 对话', icon: ChatDotRound },
+  { to: '/chat', label: '首页', icon: ChatDotRound },
   { to: '/quiz', label: '练习', icon: CollectionTag },
   { to: '/memory', label: '进展', icon: DataAnalysis },
   { to: '/plan', label: '计划', icon: Calendar },
@@ -180,7 +188,47 @@ const logout = async () => {
 }
 
 const openSettings = () => {
-  ElMessage.info('设置功能正在完善中')
+  if (!isAdmin.value) {
+    ElMessage.warning('仅管理员可访问系统设置')
+    return
+  }
+  void router.push('/model-settings')
+}
+
+const openLearningProfile = () => {
+  profileDisplayName.value = userName.value || ''
+  profileAvatarUrl.value = userAvatarUrl.value || ''
+  profileDialogVisible.value = true
+}
+
+const saveLearningProfile = async () => {
+  try {
+    profileSaving.value = true
+    const res = await api.patch('/auth/me', { display_name: profileDisplayName.value.trim() })
+    userName.value = res.data?.display_name || userName.value
+    userAvatarUrl.value = res.data?.avatar_url || userAvatarUrl.value
+    profileAvatarUrl.value = userAvatarUrl.value
+    profileDialogVisible.value = false
+    ElMessage.success('个人中心已更新')
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || '保存失败')
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+const regenerateAvatar = async () => {
+  try {
+    avatarRegenerating.value = true
+    const res = await api.post('/auth/me/avatar/regenerate')
+    userAvatarUrl.value = res.data?.avatar_url || userAvatarUrl.value
+    profileAvatarUrl.value = userAvatarUrl.value
+    ElMessage.success('头像已重新生成')
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || '头像生成失败')
+  } finally {
+    avatarRegenerating.value = false
+  }
 }
 
 const loadCurrentUser = async () => {
@@ -188,9 +236,13 @@ const loadCurrentUser = async () => {
     const res = await api.get('/auth/me')
     userName.value = res.data.display_name || '当前用户'
     userEmail.value = res.data.email || ''
+    userAvatarUrl.value = res.data.avatar_url || ''
+    isAdmin.value = !!res.data.is_admin
   } catch {
     userName.value = '当前用户'
     userEmail.value = ''
+    userAvatarUrl.value = ''
+    isAdmin.value = false
   }
 }
 
@@ -203,9 +255,10 @@ onMounted(() => {
 <template>
   <el-container class="shell-container">
     <el-aside width="250px" class="shell-aside">
-      <div class="brand">French AI Tutor</div>
+      <div class="brand brand--with-logo">
+        <img :src="yanzhouLogo" alt="言舟 logo" class="brand-logo" />
+      </div>
       <div class="shell-nav">
-        <div class="nav-section-title">学习功能</div>
         <el-menu :default-active="activePath" class="side-menu" @select="onNavSelect">
           <el-menu-item v-for="item in navItems" :key="item.to" :index="item.to">
             <el-icon><component :is="item.icon" /></el-icon>
@@ -256,7 +309,6 @@ onMounted(() => {
       </div>
 
       <div class="shell-bottom">
-        <div class="nav-section-title nav-section-title--admin">高级后台</div>
         <el-menu :default-active="activePath" class="side-menu side-menu--admin" router>
           <el-menu-item v-for="item in adminItems" :key="item.to" :index="item.to">
             <el-icon><component :is="item.icon" /></el-icon>
@@ -265,7 +317,7 @@ onMounted(() => {
         </el-menu>
 
         <div class="user-panel">
-          <el-avatar :icon="UserFilled" size="small" />
+          <el-avatar :src="userAvatarUrl || undefined" :icon="UserFilled" size="small" />
           <div class="user-meta">
             <div class="user-name">{{ userName }}</div>
             <div class="user-email">{{ userEmail }}</div>
@@ -276,9 +328,13 @@ onMounted(() => {
             </el-button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item @click="openSettings">
+                <el-dropdown-item @click="openLearningProfile">
+                  <el-icon><CollectionTag /></el-icon>
+                  <span>个人中心</span>
+                </el-dropdown-item>
+                <el-dropdown-item v-if="isAdmin" @click="openSettings">
                   <el-icon><Setting /></el-icon>
-                  <span>设置</span>
+                  <span>系统设置</span>
                 </el-dropdown-item>
                 <el-dropdown-item divided @click="logout">
                   <el-icon><SwitchButton /></el-icon>
@@ -294,4 +350,22 @@ onMounted(() => {
       <slot />
     </el-main>
   </el-container>
+
+  <el-dialog v-model="profileDialogVisible" title="个人中心" width="420px">
+    <div class="profile-dialog">
+      <div class="profile-avatar-row">
+        <el-avatar :src="profileAvatarUrl || undefined" :icon="UserFilled" :size="72" />
+        <el-button :loading="avatarRegenerating" @click="regenerateAvatar">重新生成头像</el-button>
+      </div>
+      <el-form label-position="top">
+        <el-form-item label="昵称">
+          <el-input v-model="profileDisplayName" placeholder="请输入昵称" maxlength="120" />
+        </el-form-item>
+      </el-form>
+    </div>
+    <template #footer>
+      <el-button @click="profileDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="profileSaving" @click="saveLearningProfile">保存</el-button>
+    </template>
+  </el-dialog>
 </template>

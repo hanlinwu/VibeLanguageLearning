@@ -21,10 +21,20 @@ class LLMClient:
             raise RuntimeError('LLM_API_KEY is required. Please set it in backend/.env')
         return {'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'}
 
+    def _headers_for_key(self, api_key: str) -> dict[str, str]:
+        key = (api_key or '').strip()
+        if not key:
+            raise RuntimeError('API key is required')
+        return {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
+
     def embed_text(self, text: str) -> list[float]:
-        payload = {'input': text, 'model': settings.llm_embedding_model}
+        return self.embed_text_with_provider(text, settings.llm_base_url, self.api_key, settings.llm_embedding_model)
+
+    def embed_text_with_provider(self, text: str, base_url: str, api_key: str, model: str) -> list[float]:
+        payload = {'input': text, 'model': model}
+        endpoint = base_url.rstrip('/')
         with httpx.Client(timeout=30) as client:
-            resp = client.post(f'{self.base_url}/embeddings', headers=self._headers(), json=payload)
+            resp = client.post(f'{endpoint}/embeddings', headers=self._headers_for_key(api_key), json=payload)
             resp.raise_for_status()
             data = resp.json()
             return data['data'][0]['embedding']
@@ -72,13 +82,19 @@ class LLMClient:
         )
 
     def chat_messages(self, messages: list[dict[str, str]]) -> str:
+        return self.chat_messages_with_provider(messages, settings.llm_base_url, self.api_key, settings.llm_chat_model)
+
+    def chat_messages_with_provider(
+        self, messages: list[dict[str, str]], base_url: str, api_key: str, model: str
+    ) -> str:
         payload = {
-            'model': settings.llm_chat_model,
+            'model': model,
             'messages': messages,
             'temperature': 0.2,
         }
+        endpoint = base_url.rstrip('/')
         with httpx.Client(timeout=60) as client:
-            resp = client.post(f'{self.base_url}/chat/completions', headers=self._headers(), json=payload)
+            resp = client.post(f'{endpoint}/chat/completions', headers=self._headers_for_key(api_key), json=payload)
             resp.raise_for_status()
             return resp.json()['choices'][0]['message']['content']
 
@@ -91,17 +107,27 @@ class LLMClient:
         )
 
     def stream_chat_messages(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        yield from self.stream_chat_messages_with_provider(messages, settings.llm_base_url, self.api_key, settings.llm_chat_model)
+
+    def stream_chat_messages_with_provider(
+        self,
+        messages: list[dict[str, str]],
+        base_url: str,
+        api_key: str,
+        model: str,
+    ) -> Iterator[str]:
         payload = {
-            'model': settings.llm_chat_model,
+            'model': model,
             'messages': messages,
             'temperature': 0.2,
             'stream': True,
         }
+        endpoint = base_url.rstrip('/')
         with httpx.Client(timeout=120) as client:
             with client.stream(
                 'POST',
-                f'{self.base_url}/chat/completions',
-                headers=self._headers(),
+                f'{endpoint}/chat/completions',
+                headers=self._headers_for_key(api_key),
                 json=payload,
             ) as resp:
                 resp.raise_for_status()

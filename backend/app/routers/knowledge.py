@@ -13,6 +13,7 @@ from app.db import SessionLocal, get_db
 from app.deps import get_current_user
 from app.llm_client import llm_client
 from app.models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument, User
+from app.services.model_registry import resolve_default_embedding_model
 from app.services.knowledge import load_text_from_upload, split_chunks
 
 router = APIRouter(prefix='/knowledge', tags=['knowledge'])
@@ -108,7 +109,13 @@ def _process_document_ingestion(document_id: int, content: bytes, content_type: 
 
         inserted = 0
         for idx, chunk in enumerate(chunks):
-            embedding = llm_client.embed_text(chunk)
+            embedding_model = resolve_default_embedding_model(db)
+            embedding = llm_client.embed_text_with_provider(
+                chunk,
+                embedding_model.base_url,
+                embedding_model.api_key,
+                embedding_model.model_name,
+            )
             doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
             if doc is None or doc.deleted_at is not None:
                 return
@@ -275,6 +282,7 @@ def upload_knowledge(
             raise HTTPException(status_code=403, detail='No permission to upload to this knowledge base')
 
     content = file.file.read()
+    embedding_model = resolve_default_embedding_model(db)
     doc = KnowledgeDocument(
         owner_id=current_user.id,
         knowledge_base_id=base.id,
@@ -282,6 +290,7 @@ def upload_knowledge(
         content_type=file.content_type,
         raw_content=content,
         file_size=len(content),
+        embedding_model=embedding_model.model_name,
         status='queued',
         progress=0,
         total_chunks=0,
@@ -342,6 +351,7 @@ def list_docs(
             'content_type': d.content_type,
             'status': d.status,
             'file_size': int(d.file_size or 0),
+            'embedding_model': d.embedding_model,
             'deleted_at': d.deleted_at.isoformat() if d.deleted_at else None,
             'progress': d.progress,
             'total_chunks': d.total_chunks,

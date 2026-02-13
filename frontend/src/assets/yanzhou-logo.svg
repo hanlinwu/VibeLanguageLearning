@@ -1,0 +1,25 @@
+<svg width="260" height="64" viewBox="0 0 260 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="yzIcon" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A7C6FF"/>
+      <stop offset="1" stop-color="#4D79F6"/>
+    </linearGradient>
+    <linearGradient id="yzLine" x1="16" y1="19" x2="47" y2="39" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E8F1FF"/>
+      <stop offset="1" stop-color="#C7D8FF"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="4" y="6" width="56" height="52" rx="16" fill="url(#yzIcon)"/>
+  <path d="M16 22H30L34 18L38 22H48" stroke="url(#yzLine)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M16 34H26L30 40H40L48 28" stroke="url(#yzLine)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M20 28H44" stroke="url(#yzLine)" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="16" cy="22" r="2" fill="#EAF2FF"/>
+  <circle cx="48" cy="22" r="2" fill="#EAF2FF"/>
+  <circle cx="16" cy="34" r="2" fill="#EAF2FF"/>
+  <circle cx="48" cy="28" r="2" fill="#EAF2FF"/>
+
+  <text x="70" y="30" fill="#1D4ED8" font-size="20" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="700">言舟</text>
+  <text x="124" y="30" fill="#4B6ED6" font-size="14" font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif" font-weight="600">Yanzhou</text>
+  <text x="70" y="46" fill="#7A8FBF" font-size="10" font-family="SF Pro Text, Helvetica Neue, Arial, sans-serif">你好 · Hello · Bonjour · Hola · こんにちは</text>
+</svg>

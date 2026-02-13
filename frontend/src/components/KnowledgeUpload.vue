@@ -24,6 +24,7 @@ type KnowledgeDocItem = {
   filename: string
   content_type: string
   file_size?: number
+  embedding_model?: string | null
   deleted_at?: string | null
   status: string
   progress: number
@@ -451,6 +452,9 @@ onBeforeUnmount(() => {
         </el-table-column>
         <el-table-column label="总切片" width="90">
           <template #default="{ row }">{{ row.chunk_count }}</template>
+        </el-table-column>
+        <el-table-column label="切片模型" min-width="160">
+          <template #default="{ row }">{{ row.embedding_model || '-' }}</template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">

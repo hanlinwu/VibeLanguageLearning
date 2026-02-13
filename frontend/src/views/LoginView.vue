@@ -51,7 +51,7 @@ const register = async () => {
   <div class="login-page">
     <el-card class="login-card" shadow="hover">
       <template #header>
-        <div class="login-title">French AI Tutor</div>
+        <div class="login-title">言舟</div>
       </template>
       <el-form label-position="top">
         <el-form-item label="邮箱">

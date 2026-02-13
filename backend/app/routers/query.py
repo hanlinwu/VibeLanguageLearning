@@ -23,6 +23,8 @@ def query(
         payload.question,
         conversation_id=payload.conversation_id,
         use_memory_stream=payload.use_memory_stream,
+        use_web_search=payload.use_web_search,
+        chat_model_id=payload.chat_model_id,
     )
     return QueryResponse(
         answer=answer,
@@ -44,6 +46,8 @@ def query_stream(
         payload.question,
         conversation_id=payload.conversation_id,
         use_memory_stream=payload.use_memory_stream,
+        use_web_search=payload.use_web_search,
+        chat_model_id=payload.chat_model_id,
     )
     return StreamingResponse(
         stream,
