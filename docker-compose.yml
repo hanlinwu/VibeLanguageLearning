@@ -1,15 +1,59 @@
 services:
   db:
-    image: pgvector/pgvector:pg16
+    image: ${PGVECTOR_IMAGE:-pgvector/pgvector:pg16}
     container_name: ailanguagelearn-db
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: ailanguagelearn
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - '5432:5432'
+      POSTGRES_DB: ${POSTGRES_DB:-ailanguagelearn}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ailanguagelearn}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  backend:
+    build:
+      context: ./backend
+      args:
+        PYTHON_BASE_IMAGE: ${PYTHON_BASE_IMAGE:-python:3.11-slim}
+    container_name: ailanguagelearn-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-ailanguagelearn}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-gpt-4o-mini}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-text-embedding-3-small}
+      LLM_RERANK_MODEL: ${LLM_RERANK_MODEL:-qwen3-reranker-4b}
+      LLM_RERANK_MIN_SCORE: ${LLM_RERANK_MIN_SCORE:-0.35}
+      LLM_EMBEDDING_DIMENSION: ${LLM_EMBEDDING_DIMENSION:-1536}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://127.0.0.1}
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:20-alpine}
+        NGINX_BASE_IMAGE: ${NGINX_BASE_IMAGE:-nginx:1.27-alpine}
+        VITE_API_BASE_URL: /api
+    container_name: ailanguagelearn-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
 volumes:
   pgdata:
+    name: ailanguagelearn_pgdata
