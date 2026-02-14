@@ -121,7 +121,7 @@ const loadConversations = async () => {
 const onNavSelect = async (index: string) => {
   if (index === '/chat') {
     chatStore.startNewConversation()
-    await router.push('/chat')
+    await router.push({ path: '/chat', query: {} })
     return
   }
   await router.push(index)
@@ -129,9 +129,7 @@ const onNavSelect = async (index: string) => {
 
 const openConversation = async (conversationId: number) => {
   chatStore.setActiveConversation(conversationId)
-  if (route.path !== '/chat') {
-    await router.push('/chat')
-  }
+  await router.push({ path: '/chat', query: { c: String(conversationId) } })
 }
 
 const renameConversation = async (item: ConversationItem) => {

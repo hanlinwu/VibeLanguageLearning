@@ -165,3 +165,61 @@ def test_model_settings_sync_current_idempotent(monkeypatch) -> None:
         assert payload_once['embedding_model_id'] == payload_twice['embedding_model_id']
     finally:
         db.close()
+
+
+def test_model_and_provider_can_update_and_delete() -> None:
+    with TestClient(app) as client:
+        token, email = _register_login(client, 'ms-delete-admin')
+        _set_admin(email)
+        headers = {'Authorization': f'Bearer {token}'}
+
+        provider = client.post(
+            '/model-settings/providers',
+            json={'name': 'DeleteMe', 'base_url': 'https://example.com/v1', 'api_key': 'sk-del'},
+            headers=headers,
+        )
+        assert provider.status_code == 200
+        provider_id = provider.json()['id']
+
+        model = client.post(
+            '/model-settings/models',
+            json={
+                'provider_id': provider_id,
+                'model_name': 'to-delete-model',
+                'display_name': 'To Delete',
+                'model_type': 'language',
+                'description': 'desc',
+                'tags': ['语言模型'],
+            },
+            headers=headers,
+        )
+        assert model.status_code == 200
+        model_id = model.json()['id']
+
+        update_provider = client.patch(
+            f'/model-settings/providers/{provider_id}',
+            json={'name': 'DeleteMeUpdated'},
+            headers=headers,
+        )
+        assert update_provider.status_code == 200
+        assert update_provider.json()['name'] == 'DeleteMeUpdated'
+
+        update_model = client.patch(
+            f'/model-settings/models/{model_id}',
+            json={'display_name': 'To Delete Updated'},
+            headers=headers,
+        )
+        assert update_model.status_code == 200
+        assert update_model.json()['display_name'] == 'To Delete Updated'
+
+        # Provider with bound models cannot be deleted directly.
+        provider_delete_blocked = client.delete(f'/model-settings/providers/{provider_id}', headers=headers)
+        assert provider_delete_blocked.status_code == 400
+
+        delete_model = client.delete(f'/model-settings/models/{model_id}', headers=headers)
+        assert delete_model.status_code == 200
+        assert delete_model.json()['deleted'] is True
+
+        delete_provider = client.delete(f'/model-settings/providers/{provider_id}', headers=headers)
+        assert delete_provider.status_code == 200
+        assert delete_provider.json()['deleted'] is True

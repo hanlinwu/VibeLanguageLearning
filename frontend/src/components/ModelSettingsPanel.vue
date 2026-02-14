@@ -34,6 +34,13 @@ const webSearchSerperEndpoint = ref('https://google.serper.dev/search')
 const webSearchSerperApiKey = ref('')
 const webSearchSerperHasApiKey = ref(false)
 
+const providerDialogVisible = ref(false)
+const modelDialogVisible = ref(false)
+const providerDialogMode = ref<'create' | 'edit'>('create')
+const modelDialogMode = ref<'create' | 'edit'>('create')
+const editingProviderId = ref<number | null>(null)
+const editingModelId = ref<number | null>(null)
+
 const providerForm = ref({
   name: '',
   base_url: '',
@@ -85,40 +92,132 @@ const loadAll = async () => {
   }
 }
 
-const createProvider = async () => {
+const openCreateProviderDialog = () => {
+  providerDialogMode.value = 'create'
+  editingProviderId.value = null
+  providerForm.value = { name: '', base_url: '', api_key: '', is_enabled: true }
+  providerDialogVisible.value = true
+}
+
+const openEditProviderDialog = (item: ProviderItem) => {
+  providerDialogMode.value = 'edit'
+  editingProviderId.value = item.id
+  providerForm.value = { name: item.name, base_url: item.base_url, api_key: '', is_enabled: item.is_enabled }
+  providerDialogVisible.value = true
+}
+
+const submitProviderDialog = async () => {
   try {
-    await api.post('/model-settings/providers', providerForm.value)
-    providerForm.value = { name: '', base_url: '', api_key: '', is_enabled: true }
+    if (providerDialogMode.value === 'create') {
+      await api.post('/model-settings/providers', providerForm.value)
+      ElMessage.success('供应商已创建')
+    } else if (editingProviderId.value) {
+      const payload: Record<string, any> = {
+        name: providerForm.value.name,
+        base_url: providerForm.value.base_url,
+        is_enabled: providerForm.value.is_enabled,
+      }
+      if (providerForm.value.api_key.trim()) payload.api_key = providerForm.value.api_key.trim()
+      await api.patch(`/model-settings/providers/${editingProviderId.value}`, payload)
+      ElMessage.success('供应商已更新')
+    }
+    providerDialogVisible.value = false
     await loadAll()
-    ElMessage.success('供应商已创建')
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || e.message || '创建供应商失败')
+    ElMessage.error(e.response?.data?.detail || e.message || '提交供应商失败')
   }
 }
 
-const createModel = async () => {
+const deleteProvider = async (item: ProviderItem) => {
+  try {
+    await ElMessageBox.confirm(`确认删除供应商「${item.name}」？`, '删除供应商', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await api.delete(`/model-settings/providers/${item.id}`)
+    await loadAll()
+    ElMessage.success('供应商已删除')
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error(e.response?.data?.detail || e.message || '删除供应商失败')
+    }
+  }
+}
+
+const openCreateModelDialog = () => {
+  modelDialogMode.value = 'create'
+  editingModelId.value = null
+  modelForm.value = {
+    provider_id: providers.value[0]?.id || 0,
+    model_name: '',
+    display_name: '',
+    model_type: 'language',
+    description: '',
+    tags: '',
+    is_enabled: true,
+  }
+  modelDialogVisible.value = true
+}
+
+const openEditModelDialog = (item: ModelItem) => {
+  modelDialogMode.value = 'edit'
+  editingModelId.value = item.id
+  modelForm.value = {
+    provider_id: item.provider_id,
+    model_name: item.model_name,
+    display_name: item.display_name,
+    model_type: item.model_type,
+    description: item.description || '',
+    tags: (item.tags || []).join(', '),
+    is_enabled: item.is_enabled,
+  }
+  modelDialogVisible.value = true
+}
+
+const submitModelDialog = async () => {
   try {
     const payload = {
-      ...modelForm.value,
+      provider_id: modelForm.value.provider_id,
+      model_name: modelForm.value.model_name,
+      display_name: modelForm.value.display_name,
+      model_type: modelForm.value.model_type,
+      description: modelForm.value.description,
       tags: modelForm.value.tags
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean),
+      is_enabled: modelForm.value.is_enabled,
     }
-    await api.post('/model-settings/models', payload)
-    modelForm.value = {
-      provider_id: providers.value[0]?.id || 0,
-      model_name: '',
-      display_name: '',
-      model_type: 'language',
-      description: '',
-      tags: '',
-      is_enabled: true,
+
+    if (modelDialogMode.value === 'create') {
+      await api.post('/model-settings/models', payload)
+      ElMessage.success('模型已创建')
+    } else if (editingModelId.value) {
+      await api.patch(`/model-settings/models/${editingModelId.value}`, payload)
+      ElMessage.success('模型已更新')
     }
+    modelDialogVisible.value = false
     await loadAll()
-    ElMessage.success('模型已创建')
   } catch (e: any) {
-    ElMessage.error(e.response?.data?.detail || e.message || '创建模型失败')
+    ElMessage.error(e.response?.data?.detail || e.message || '提交模型失败')
+  }
+}
+
+const deleteModel = async (item: ModelItem) => {
+  try {
+    await ElMessageBox.confirm(`确认删除模型「${item.display_name}」？`, '删除模型', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await api.delete(`/model-settings/models/${item.id}`)
+    await loadAll()
+    ElMessage.success('模型已删除')
+  } catch (e: any) {
+    if (e !== 'cancel') {
+      ElMessage.error(e.response?.data?.detail || e.message || '删除模型失败')
+    }
   }
 }
 
@@ -160,12 +259,6 @@ const setDefaultEmbeddingModel = async () => {
   }
 }
 
-const deleteProviderGuard = async () => {
-  await ElMessageBox.alert('当前版本暂不提供删除供应商，避免误删后影响历史模型映射。', '提示', {
-    confirmButtonText: '知道了',
-  })
-}
-
 const modelTypeText = (value: string) => {
   if (value === 'language') return '语言模型'
   if (value === 'vision_language') return '视觉语言模型'
@@ -183,28 +276,26 @@ onMounted(() => {
   <section v-loading="loading" class="model-settings-layout">
     <el-card shadow="never">
       <template #header>
-        <div class="card-header-row"><span>供应商配置</span></div>
+        <div class="card-header-row">
+          <span>供应商配置</span>
+          <el-button type="primary" size="small" @click="openCreateProviderDialog">添加供应商</el-button>
+        </div>
       </template>
-      <div class="model-form-grid">
-        <el-input v-model="providerForm.name" placeholder="供应商名称" />
-        <el-input v-model="providerForm.base_url" placeholder="Base URL" />
-        <el-input v-model="providerForm.api_key" placeholder="API Key" show-password />
-        <el-button type="primary" @click="createProvider">新增供应商</el-button>
-      </div>
-      <el-table :data="providers" size="small" style="margin-top: 12px">
-        <el-table-column prop="name" label="名称" width="160" />
-        <el-table-column prop="base_url" label="Base URL" min-width="220" />
-        <el-table-column label="API Key" width="110">
+      <el-table :data="providers" size="small">
+        <el-table-column prop="name" label="名称" width="180" />
+        <el-table-column prop="base_url" label="Base URL" min-width="260" />
+        <el-table-column label="API Key" width="120">
           <template #default="{ row }">{{ row.has_api_key ? '已配置' : '未配置' }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="row.is_enabled ? 'success' : 'info'" size="small">{{ row.is_enabled ? '启用' : '停用' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="90">
-          <template #default>
-            <el-button text @click="deleteProviderGuard">说明</el-button>
+        <el-table-column label="操作" width="170">
+          <template #default="{ row }">
+            <el-button text @click="openEditProviderDialog(row)">编辑</el-button>
+            <el-button text type="danger" @click="deleteProvider(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -212,25 +303,12 @@ onMounted(() => {
 
     <el-card shadow="never">
       <template #header>
-        <div class="card-header-row"><span>模型配置</span></div>
+        <div class="card-header-row">
+          <span>模型配置</span>
+          <el-button type="primary" size="small" @click="openCreateModelDialog">添加模型</el-button>
+        </div>
       </template>
-      <div class="model-form-grid model-form-grid--models">
-        <el-select v-model="modelForm.provider_id" placeholder="选择供应商">
-          <el-option v-for="item in providers" :key="item.id" :label="item.name" :value="item.id" />
-        </el-select>
-        <el-input v-model="modelForm.model_name" placeholder="模型名（API）" />
-        <el-input v-model="modelForm.display_name" placeholder="显示名" />
-        <el-select v-model="modelForm.model_type">
-          <el-option label="语言模型" value="language" />
-          <el-option label="视觉语言模型" value="vision_language" />
-          <el-option label="推理模型" value="reasoning" />
-          <el-option label="Embedding" value="embedding" />
-        </el-select>
-        <el-input v-model="modelForm.description" placeholder="简短描述" />
-        <el-input v-model="modelForm.tags" placeholder="标签，逗号分隔" />
-        <el-button type="primary" @click="createModel">新增模型</el-button>
-      </div>
-      <el-table :data="models" size="small" style="margin-top: 12px">
+      <el-table :data="models" size="small">
         <el-table-column prop="display_name" label="显示名" width="180" />
         <el-table-column prop="model_name" label="模型名" min-width="180" />
         <el-table-column prop="provider_name" label="供应商" width="130" />
@@ -251,6 +329,12 @@ onMounted(() => {
         <el-table-column label="测试" width="90">
           <template #default="{ row }">
             <el-button text @click="testModel(row)">测试</el-button>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="170">
+          <template #default="{ row }">
+            <el-button text @click="openEditModelDialog(row)">编辑</el-button>
+            <el-button text type="danger" @click="deleteModel(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -293,5 +377,70 @@ onMounted(() => {
         <el-button type="primary" @click="setDefaultEmbeddingModel">保存系统配置</el-button>
       </div>
     </el-card>
+
+    <el-dialog v-model="providerDialogVisible" :title="providerDialogMode === 'create' ? '添加供应商' : '编辑供应商'" width="560px">
+      <el-form label-position="top">
+        <el-form-item label="供应商名称">
+          <el-input v-model="providerForm.name" placeholder="供应商名称" />
+        </el-form-item>
+        <el-form-item label="Base URL">
+          <el-input v-model="providerForm.base_url" placeholder="Base URL" />
+        </el-form-item>
+        <el-form-item :label="providerDialogMode === 'create' ? 'API Key' : 'API Key（不填则保持原值）'">
+          <el-input v-model="providerForm.api_key" placeholder="API Key" show-password />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-switch v-model="providerForm.is_enabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="providerDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitProviderDialog">{{ providerDialogMode === 'create' ? '添加' : '保存' }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="modelDialogVisible" :title="modelDialogMode === 'create' ? '添加模型' : '编辑模型'" width="620px">
+      <el-form label-position="top">
+        <el-form-item label="供应商">
+          <el-select v-model="modelForm.provider_id" placeholder="选择供应商" style="width: 100%">
+            <el-option v-for="item in providers" :key="item.id" :label="item.name" :value="item.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="模型名（API）">
+          <el-input v-model="modelForm.model_name" placeholder="模型名（API）" />
+        </el-form-item>
+        <el-form-item label="显示名">
+          <el-input v-model="modelForm.display_name" placeholder="显示名" />
+        </el-form-item>
+        <el-form-item label="模型类型">
+          <el-select v-model="modelForm.model_type" style="width: 100%">
+            <el-option label="语言模型" value="language" />
+            <el-option label="视觉语言模型" value="vision_language" />
+            <el-option label="推理模型" value="reasoning" />
+            <el-option label="Embedding" value="embedding" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="简短描述">
+          <el-input v-model="modelForm.description" placeholder="简短描述" />
+        </el-form-item>
+        <el-form-item label="标签（逗号分隔）">
+          <el-input v-model="modelForm.tags" placeholder="标签，逗号分隔" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-switch v-model="modelForm.is_enabled" active-text="启用" inactive-text="停用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="modelDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitModelDialog">{{ modelDialogMode === 'create' ? '添加' : '保存' }}</el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
+
+<style scoped>
+.model-settings-layout {
+  display: grid;
+  gap: 12px;
+}
+</style>

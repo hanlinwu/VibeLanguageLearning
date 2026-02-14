@@ -143,6 +143,42 @@ def update_provider(
     }
 
 
+@router.delete('/providers/{provider_id}')
+def delete_provider(
+    provider_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_admin),
+) -> dict:
+    provider = db.query(ModelProvider).filter(ModelProvider.id == provider_id).first()
+    if provider is None:
+        return {'deleted': False}
+
+    bound_model_count = db.query(ModelConfig).filter(ModelConfig.provider_id == provider_id).count()
+    if bound_model_count > 0:
+        raise HTTPException(status_code=400, detail='Provider has bound models, delete models first')
+
+    db.delete(provider)
+    db.commit()
+    return {'deleted': True}
+
+
+@router.delete('/providers/{provider_id}')
+def delete_provider(
+    provider_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_admin),
+) -> dict:
+    provider = db.query(ModelProvider).filter(ModelProvider.id == provider_id).first()
+    if provider is None:
+        raise HTTPException(status_code=404, detail='Provider not found')
+    bound_count = db.query(ModelConfig).filter(ModelConfig.provider_id == provider_id).count()
+    if bound_count > 0:
+        raise HTTPException(status_code=400, detail='请先删除该供应商下的模型')
+    db.delete(provider)
+    db.commit()
+    return {'deleted': True}
+
+
 @router.get('/models')
 def list_models(
     model_type: Optional[str] = Query(default=None),
@@ -248,6 +284,34 @@ def update_model(
         'created_at': model.created_at.isoformat(),
         'updated_at': model.updated_at.isoformat(),
     }
+
+
+@router.delete('/models/{model_id}')
+def delete_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_admin),
+) -> dict:
+    model = db.query(ModelConfig).filter(ModelConfig.id == model_id).first()
+    if model is None:
+        return {'deleted': False}
+    db.delete(model)
+    db.commit()
+    return {'deleted': True}
+
+
+@router.delete('/models/{model_id}')
+def delete_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_admin),
+) -> dict:
+    model = db.query(ModelConfig).filter(ModelConfig.id == model_id).first()
+    if model is None:
+        raise HTTPException(status_code=404, detail='Model not found')
+    db.delete(model)
+    db.commit()
+    return {'deleted': True}
 
 
 @router.post('/models/{model_id}/test')

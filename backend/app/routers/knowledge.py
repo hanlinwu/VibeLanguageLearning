@@ -91,7 +91,13 @@ def _update_document_progress(
     db.commit()
 
 
-def _process_document_ingestion(document_id: int, content: bytes, content_type: str, filename: str) -> None:
+def _process_document_ingestion(
+    document_id: int,
+    content: bytes,
+    content_type: str,
+    filename: str,
+    resume: bool = False,
+) -> None:
     db = SessionLocal()
     try:
         doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
@@ -101,14 +107,39 @@ def _process_document_ingestion(document_id: int, content: bytes, content_type: 
         _update_document_progress(db, doc, status='slicing', progress=10, error_message=None)
         text = load_text_from_upload(content, content_type, filename=filename)
         chunks = split_chunks(text)
-        _update_document_progress(db, doc, status='embedding', progress=20, total_chunks=len(chunks), processed_chunks=0)
+        existing_chunk_indexes: set[int] = set()
+        if resume:
+            rows = (
+                db.query(KnowledgeChunk.chunk_index)
+                .filter(KnowledgeChunk.document_id == document_id)
+                .all()
+            )
+            existing_chunk_indexes = {int(row[0]) for row in rows}
+        else:
+            # Defensive cleanup for non-resume run to avoid duplicate chunks.
+            db.query(KnowledgeChunk).filter(KnowledgeChunk.document_id == document_id).delete(synchronize_session=False)
+            db.commit()
+
+        existing_valid_count = len([idx for idx in existing_chunk_indexes if 0 <= idx < len(chunks)])
+        initial_progress = 20 + int((existing_valid_count / len(chunks)) * 75) if chunks else 20
+        _update_document_progress(
+            db,
+            doc,
+            status='embedding',
+            progress=initial_progress,
+            total_chunks=len(chunks),
+            processed_chunks=existing_valid_count,
+            chunk_count=existing_valid_count,
+        )
 
         if not chunks:
             _update_document_progress(db, doc, status='completed', progress=100, chunk_count=0, total_chunks=0)
             return
 
-        inserted = 0
+        inserted = existing_valid_count
         for idx, chunk in enumerate(chunks):
+            if idx in existing_chunk_indexes:
+                continue
             embedding_model = resolve_default_embedding_model(db)
             embedding = llm_client.embed_text_with_provider(
                 chunk,
@@ -446,3 +477,42 @@ def restore_doc(
     db.add(doc)
     db.commit()
     return {'restored': True}
+
+
+@router.post('/docs/{document_id}/resume')
+def resume_doc_ingestion(
+    document_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    doc = db.query(KnowledgeDocument).filter(KnowledgeDocument.id == document_id).first()
+    if doc is None:
+        raise HTTPException(status_code=404, detail='Document not found')
+    base = db.query(KnowledgeBase).filter(KnowledgeBase.id == doc.knowledge_base_id).first()
+    if base is None:
+        raise HTTPException(status_code=404, detail='Knowledge base not found')
+    if not _can_manage_base(current_user, base):
+        raise HTTPException(status_code=403, detail='No permission to retry this document')
+    if doc.deleted_at is not None:
+        raise HTTPException(status_code=400, detail='Cannot retry deleted document')
+    if doc.status != 'failed':
+        raise HTTPException(status_code=400, detail='Only failed document can be resumed')
+    if not doc.raw_content:
+        raise HTTPException(status_code=400, detail='Original file is missing')
+
+    _update_document_progress(db, doc, status='queued', progress=0, error_message=None)
+    background_tasks.add_task(
+        _process_document_ingestion,
+        doc.id,
+        doc.raw_content,
+        doc.content_type or 'application/octet-stream',
+        doc.filename or '',
+        True,
+    )
+    return {
+        'document_id': doc.id,
+        'knowledge_base_id': doc.knowledge_base_id,
+        'status': doc.status,
+        'progress': doc.progress,
+    }

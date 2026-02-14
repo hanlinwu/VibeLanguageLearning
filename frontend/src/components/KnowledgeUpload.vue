@@ -293,6 +293,19 @@ const restoreDoc = async (row: KnowledgeDocItem) => {
   }
 }
 
+const resumeDoc = async (row: KnowledgeDocItem) => {
+  try {
+    await api.post(`/knowledge/docs/${row.id}/resume`)
+    ElMessage.success('已继续执行切片任务')
+    if (selectedBaseId.value) {
+      await loadDocs(selectedBaseId.value)
+      startPolling()
+    }
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.detail || e.message || '继续执行失败')
+  }
+}
+
 onMounted(async () => {
   await loadCurrentUser()
   await loadBases()
@@ -456,8 +469,17 @@ onBeforeUnmount(() => {
         <el-table-column label="切片模型" min-width="160">
           <template #default="{ row }">{{ row.embedding_model || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="!row.deleted_at && row.status === 'failed'"
+              text
+              type="primary"
+              :disabled="!selectedBaseCanManage"
+              @click="resumeDoc(row)"
+            >
+              继续切片
+            </el-button>
             <el-button
               :type="row.deleted_at ? 'primary' : 'danger'"
               text

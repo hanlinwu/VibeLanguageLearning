@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CaretBottom, CloseBold, Top } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
@@ -84,6 +84,7 @@ const abortRequested = ref(false)
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 const router = useRouter()
+const route = useRoute()
 const { activeConversationId } = storeToRefs(chatStore)
 const loadingMessages = ref(false)
 const loadingModels = ref(false)
@@ -103,9 +104,30 @@ const selectedChatModel = computed(() =>
 )
 const homeDashboard = ref<HomeDashboard | null>(null)
 const loadingHomeDashboard = ref(false)
+const routeConversationHydrated = ref(false)
 
 const setDialogViewportRef = (el: Element | null) => {
   dialogViewportRef.value = el as HTMLElement | null
+}
+
+const parseConversationIdFromQuery = (raw: unknown): number | null => {
+  const value = Array.isArray(raw) ? raw[0] : raw
+  const parsed = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) return null
+  return parsed
+}
+
+const syncConversationToUrl = async (conversationId: number | null) => {
+  if (route.path !== '/chat') return
+  const current = parseConversationIdFromQuery(route.query.c)
+  if (current === conversationId) return
+  const nextQuery: Record<string, any> = { ...route.query }
+  if (conversationId) {
+    nextQuery.c = String(conversationId)
+  } else {
+    delete nextQuery.c
+  }
+  await router.replace({ path: '/chat', query: nextQuery })
 }
 
 const scrollToBottom = async (smooth = false) => {
@@ -320,6 +342,7 @@ const send = async () => {
             resolvedConversationId = payload.conversation_id
             chatStore.setActiveConversation(payload.conversation_id)
             target.conversation_id = payload.conversation_id
+            await syncConversationToUrl(payload.conversation_id)
           }
         } else if (payload.type === 'chunk') {
           streamHasOutput = true
@@ -343,6 +366,7 @@ const send = async () => {
             resolvedConversationId = payload.conversation_id
             chatStore.setActiveConversation(payload.conversation_id)
             target.conversation_id = payload.conversation_id
+            await syncConversationToUrl(payload.conversation_id)
           }
           await chatStore.loadConversations()
           await scrollToBottom()
@@ -448,6 +472,8 @@ const activeConversationIdRef = computed(() => activeConversationId.value)
 watch(
   activeConversationIdRef,
   async (conversationId) => {
+    if (!routeConversationHydrated.value) return
+    await syncConversationToUrl(conversationId)
     // Keep in-flight streamed message stable; avoid replacing local optimistic history.
     if (sending.value) {
       return
@@ -458,6 +484,22 @@ watch(
       return
     }
     await loadMessagesByConversationId(conversationId)
+  },
+  { immediate: true },
+)
+
+watch(
+  () => route.query.c,
+  (raw) => {
+    if (route.path !== '/chat') return
+    const fromQuery = parseConversationIdFromQuery(raw)
+    routeConversationHydrated.value = true
+    if (fromQuery === activeConversationId.value) return
+    if (fromQuery) {
+      chatStore.setActiveConversation(fromQuery)
+    } else {
+      chatStore.startNewConversation()
+    }
   },
   { immediate: true },
 )
@@ -523,49 +565,51 @@ onMounted(() => {
             <div class="chat-head-right" />
           </div>
           <div v-if="!isEmptyState" class="dialog-scroll" :ref="setDialogViewportRef">
-            <div
-              v-for="item in history"
-              :key="`chat-${item.id}`"
-              class="dialog-pair"
-            >
-              <div class="message-row user">
-                <div class="bubble user">{{ item.question }}</div>
-              </div>
-              <div class="message-row assistant">
-                <button
-                  type="button"
-                  class="robot-avatar-btn"
-                  :class="{
-                    'is-thinking': sending && item.id === history[history.length - 1]?.id,
-                    'is-blink': robotBlink,
-                    'is-click': robotClickPulse,
-                  }"
-                  :style="{ '--eye-x': `${robotEyeX}px`, '--eye-y': `${robotEyeY}px` }"
-                  @click="onRobotClick"
-                >
-                  <span class="robot-head">
-                    <span class="robot-antenna" />
-                    <span class="robot-face">
-                      <span class="robot-eye robot-eye--left" />
-                      <span class="robot-eye robot-eye--right" />
-                      <span class="robot-mouth" />
-                    </span>
-                  </span>
-                </button>
-                <div class="bubble assistant">
-                  <template v-if="sending && !item.answer && item.id === history[history.length - 1]?.id">
-                    <span class="assistant-status-text">{{ item.pending_status || '正在思考回答...' }}</span>
-                  </template>
-                  <template v-else>
-                    <div class="markdown-body" v-html="renderMarkdownToHtml(item.answer || '')" />
-                  </template>
+            <div class="dialog-scroll-inner">
+              <div
+                v-for="item in history"
+                :key="`chat-${item.id}`"
+                class="dialog-pair"
+              >
+                <div class="message-row user">
+                  <div class="bubble user">{{ item.question }}</div>
                 </div>
-              </div>
-              <div v-if="item.citations && item.citations.length > 0" class="message-row assistant">
-                <div class="avatar avatar--ghost" />
-                <button class="bubble-citation-summary" type="button" @click="openCitationDrawer(item)">
-                  {{ citationSummaryText(item.citations) }}
-                </button>
+                <div class="message-row assistant">
+                  <button
+                    type="button"
+                    class="robot-avatar-btn"
+                    :class="{
+                      'is-thinking': sending && item.id === history[history.length - 1]?.id,
+                      'is-blink': robotBlink,
+                      'is-click': robotClickPulse,
+                    }"
+                    :style="{ '--eye-x': `${robotEyeX}px`, '--eye-y': `${robotEyeY}px` }"
+                    @click="onRobotClick"
+                  >
+                    <span class="robot-head">
+                      <span class="robot-antenna" />
+                      <span class="robot-face">
+                        <span class="robot-eye robot-eye--left" />
+                        <span class="robot-eye robot-eye--right" />
+                        <span class="robot-mouth" />
+                      </span>
+                    </span>
+                  </button>
+                  <div class="bubble assistant">
+                    <template v-if="sending && !item.answer && item.id === history[history.length - 1]?.id">
+                      <span class="assistant-status-text">{{ item.pending_status || '正在思考回答...' }}</span>
+                    </template>
+                    <template v-else>
+                      <div class="markdown-body" v-html="renderMarkdownToHtml(item.answer || '')" />
+                    </template>
+                  </div>
+                </div>
+                <div v-if="item.citations && item.citations.length > 0" class="message-row assistant">
+                  <div class="avatar avatar--ghost" />
+                  <button class="bubble-citation-summary" type="button" @click="openCitationDrawer(item)">
+                    {{ citationSummaryText(item.citations) }}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -582,7 +626,7 @@ onMounted(() => {
                 v-model="question"
                 class="chat-input"
                 type="textarea"
-                :autosize="{ minRows: 3, maxRows: 8 }"
+                :autosize="{ minRows: 2, maxRows: 6 }"
                 placeholder="输入消息（Enter 发送，Shift+Enter 换行）"
                 @keydown="onKeydown"
               />

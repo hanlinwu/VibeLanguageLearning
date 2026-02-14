@@ -6,6 +6,7 @@ os.environ['DATABASE_URL'] = 'sqlite:///./test.db'
 from fastapi.testclient import TestClient
 
 from app.db import SessionLocal
+from app.config import get_settings
 from app.models import User
 from app.main import app
 
@@ -199,3 +200,55 @@ def test_public_base_is_visible_to_others_but_manageable_by_admin_only() -> None
             headers=user_headers,
         )
         assert update_by_user.status_code == 403
+
+
+def test_failed_document_can_resume_ingestion(monkeypatch) -> None:
+    settings = get_settings()
+    call_counter = {'n': 0}
+
+    def flaky_embed_text_with_provider(text: str, base_url: str, api_key: str, model: str):
+        call_counter['n'] += 1
+        if call_counter['n'] == 2:
+            raise RuntimeError('mock embedding failure on second chunk')
+        return [0.01] * settings.llm_embedding_dimension
+
+    monkeypatch.setattr(
+        'app.routers.knowledge.llm_client.embed_text_with_provider',
+        flaky_embed_text_with_provider,
+    )
+
+    with TestClient(app) as client:
+        token, _ = _register_and_login(client)
+        headers = {'Authorization': f'Bearer {token}'}
+
+        create_base = client.post('/knowledge/bases', json={'name': '恢复切片测试库'}, headers=headers)
+        assert create_base.status_code == 200
+        base_id = create_base.json()['id']
+
+        long_text = ('\n'.join(['bonjour monde'] * 180)).encode('utf-8')
+        files = {'file': ('retry.md', long_text, 'text/markdown')}
+        upload = client.post(f'/knowledge/upload?knowledge_base_id={base_id}', files=files, headers=headers)
+        assert upload.status_code == 200
+        document_id = upload.json()['document_id']
+
+        docs = client.get(f'/knowledge/docs?knowledge_base_id={base_id}', headers=headers)
+        assert docs.status_code == 200
+        target = next(item for item in docs.json() if item['id'] == document_id)
+        assert call_counter['n'] >= 2
+        assert target['status'] == 'failed'
+        assert target['processed_chunks'] < target['total_chunks']
+
+        # Restore embed function and resume failed ingestion.
+        monkeypatch.setattr(
+            'app.routers.knowledge.llm_client.embed_text_with_provider',
+            lambda text, base_url, api_key, model: [0.01] * settings.llm_embedding_dimension,
+        )
+        resume = client.post(f'/knowledge/docs/{document_id}/resume', headers=headers)
+        assert resume.status_code == 200
+
+        docs_after = client.get(f'/knowledge/docs?knowledge_base_id={base_id}', headers=headers)
+        assert docs_after.status_code == 200
+        target_after = next(item for item in docs_after.json() if item['id'] == document_id)
+        assert target_after['status'] == 'completed'
+        assert target_after['processed_chunks'] == target_after['total_chunks']
+        assert target_after['chunk_count'] == target_after['total_chunks']
