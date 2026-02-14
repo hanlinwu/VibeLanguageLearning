@@ -2,6 +2,8 @@
   --bg-grad: linear-gradient(140deg, #fff6ef 0%, #e8f3ff 48%, #f2fff2 100%);
   --text: #1f2937;
   --chat-max-width: 980px;
+  --chat-content-gutter: 20px;
+  --chat-content-width: min(var(--chat-max-width), calc(100% - (var(--chat-content-gutter) * 2)));
   --citation-drawer-width: 460px;
 }
 
@@ -189,8 +191,23 @@ body {
 }
 
 .conversation-nav-more {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: #96a1b2;
-  opacity: 0.8;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
+}
+
+.conversation-nav-item:hover .conversation-nav-more,
+.conversation-nav-item:focus-within .conversation-nav-more {
+  opacity: 0.82;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .history-divider {
@@ -913,7 +930,7 @@ body {
 }
 
 .dialog-scroll-inner {
-  width: min(var(--chat-max-width), 100%);
+  width: var(--chat-content-width);
   margin: 0 auto;
   padding-right: 8px;
 }
@@ -930,6 +947,8 @@ body {
 
 .chat-main-panel--empty {
   justify-content: center;
+  padding-top: 36px;
+  padding-bottom: 28px;
 }
 
 .chat-main-panel--empty .chat-empty-hero {
@@ -952,10 +971,14 @@ body {
   bottom: auto;
   z-index: auto;
   display: block;
-  width: min(var(--chat-max-width), calc(100% - 20px));
+  width: var(--chat-content-width);
   margin: 0 auto;
   pointer-events: auto;
   padding-bottom: 0;
+}
+
+.chat-main-panel--empty .chat-composer--empty .composer-shell {
+  width: 100%;
 }
 
 .chat-head {
@@ -1091,14 +1114,14 @@ body {
 }
 
 .chat-composer .composer-shell {
-  width: min(var(--chat-max-width), calc(100% - 20px));
+  width: var(--chat-content-width);
   pointer-events: auto;
   backdrop-filter: blur(2px);
 }
 
 .chat-empty-hero {
-  width: min(var(--chat-max-width), 92%);
-  margin: 0 auto 14px;
+  width: var(--chat-content-width);
+  margin: 0 auto 28px;
   display: flex;
   justify-content: center;
 }
@@ -1119,8 +1142,8 @@ body {
 }
 
 .chat-home-dashboard {
-  width: min(var(--chat-max-width), 92%);
-  margin: 4px auto 8px;
+  width: var(--chat-content-width);
+  margin: 24px auto 10px;
 }
 
 .chat-home-grid {
@@ -1660,6 +1683,10 @@ body {
 }
 
 @media (max-width: 768px) {
+  :root {
+    --chat-content-gutter: 12px;
+  }
+
   .chat-layout {
     height: 100%;
     gap: 10px;
